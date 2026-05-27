@@ -1,0 +1,51 @@
+# AutoTopo 全局配置
+
+# ─── LLM 配置 ───
+llm:
+  # 可选 provider: openai, deepseek, glm, ollama
+  default_provider: "openai"
+  # 各 provider 配置
+  providers:
+    openai:
+      model: "gpt-4o"
+      temperature: 0.1
+      # api_key 通过环境变量 OPENAI_API_KEY 设置
+    deepseek:
+      model: "deepseek-chat"
+      base_url: "https://api.deepseek.com/v1"
+      temperature: 0.1
+      # api_key 通过环境变量 DEEPSEEK_API_KEY 设置
+    glm:
+      model: "glm-4v"
+      base_url: "https://open.bigmodel.cn/api/paas/v4"
+      temperature: 0.1
+      # api_key 通过环境变量 GLM_API_KEY 设置
+
+  # 视觉评估专用 provider（需支持图像输入）
+  vision_provider: "openai"
+
+# ─── 仿真引擎 ───
+engine:
+  backend: "jax_fem"
+  # 2D 默认参数
+  default_params:
+    nelx: 60           # x方向单元数
+    nely: 30           # y方向单元数
+    volfrac: 0.5       # 体积分数
+    penal: 3.0         # SIMP 罚因子
+    rmin: 1.5          # 过滤半径
+    max_iter: 200      # 最大优化迭代数
+
+# ─── 视觉评估反馈 ───
+evaluation:
+  max_retries: 3        # 默认最大重试次数（用户可自行设置）
+  defect_thresholds:
+    gray_ratio: 0.1     # 灰度单元占比阈值
+    checkerboard_score: 0.3
+
+# ─── 输出 ───
+output:
+  dir: "./output"
+  save_intermediate: true   # 是否保存中间迭代结果
+  image_format: "png"
+  dpi: 300

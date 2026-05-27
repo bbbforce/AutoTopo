@@ -1,0 +1,43 @@
+# ─── 环境与密钥 ───
+.env
+.env.*
+!.env.example
+
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+.eggs/
+
+# ─── 虚拟环境 ───
+venv/
+.venv/
+env/
+
+# ─── IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── 输出与缓存 ───
+output/
+*.png
+*.jpg
+*.jpeg
+!examples/*.png
+
+# ─── 系统文件 ───
+.DS_Store
+Thumbs.db
+
+# ─── pytest / ruff ───
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
