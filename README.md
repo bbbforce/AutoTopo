@@ -60,7 +60,7 @@ llm:
 
 运行端到端工作流：
 ```bash
-python -m autotopo run "设计一个 120x40 的悬臂梁，左端固定，右端中点施加向下单位力，体积分数 0.4，最小化柔度。" --max-retries 5
+python -m autotopo run "设计一个二维悬臂梁。设计域120x40，使用120x40网格。左端完全固定，右端中点施加竖直向下的单位集中力。E=1, ν=0.3。最小化柔度，体积分数≤0.4。penal=3, rmin=2.0, max_iter=200。" --max-retries 5
 ```
 
 #### B. 纯数值仿真求解 (无需 LLM)

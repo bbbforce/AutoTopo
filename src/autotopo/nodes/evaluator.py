@@ -133,7 +133,7 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
     # 安全边界
     BOUNDS = {
         "penal": (1.0, 10.0),
-        "rmin": (0.5, 5.0),
+        "rmin": (0.5, 15.0),
         "volfrac": (0.1, 0.9),
     }
 

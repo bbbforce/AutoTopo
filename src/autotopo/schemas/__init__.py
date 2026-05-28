@@ -21,6 +21,8 @@ class BCType(str, Enum):
     FIXED_X = "fixed_x"
     FIXED_Y = "fixed_y"
     DISPLACEMENT = "displacement"
+    SYMMETRY = "symmetry"
+    ROLLER = "roller"
 
 
 class LoadType(str, Enum):
