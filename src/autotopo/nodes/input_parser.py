@@ -20,7 +20,7 @@ from autotopo.state import AutoTopoState
 
 PARSER_SYSTEM_PROMPT = """\
 你是一个拓扑优化问题解析专家。你的任务是将用户的自然语言描述（可能附带设计域示意图）
-解析为结构化的拓扑优化问题定义。
+解析为结构化的 JSON 拓扑优化问题定义。
 
 关键要求：
 1. 精确识别设计域尺寸、材料参数、边界条件、载荷和约束
@@ -33,6 +33,52 @@ PARSER_SYSTEM_PROMPT = """\
 - MBB 梁：左端下角固定x,y，右端下角固定y，顶部中点施加向下集中力
 - 悬臂梁：左端全固定，右端中点施加向下集中力
 - 桥梁：底部两端铰接，顶部分布载荷
+
+请确保输出的 JSON 结构与字段完全匹配以下示例：
+```json
+{
+  "description": "悬臂梁设计问题说明...",
+  "domain": {
+    "width": 60.0,
+    "height": 20.0,
+    "nelx": 60,
+    "nely": 20,
+    "non_design_regions": []
+  },
+  "material": {
+    "youngs_modulus": 1.0,
+    "poissons_ratio": 0.3
+  },
+  "boundary_conditions": [
+    {
+      "type": "fixed",
+      "location": "left_edge"
+    }
+  ],
+  "loads": [
+    {
+      "type": "point_force",
+      "location": "right_center",
+      "magnitude": 1.0,
+      "direction": [0.0, -1.0]
+    }
+  ],
+  "objective": "minimize_compliance",
+  "constraints": [
+    {
+      "type": "volume_fraction",
+      "value": 0.5,
+      "description": "体积分数约束"
+    }
+  ],
+  "parameters": {
+    "penal": 3.0,
+    "rmin": 1.5,
+    "max_iter": 200,
+    "tol": 0.01
+  }
+}
+```
 """
 
 
@@ -66,7 +112,7 @@ def parse_input(state: AutoTopoState) -> dict[str, Any]:
     ]
 
     problem: OptimizationProblem = llm.invoke(messages)
-    problem_dict = problem.model_dump()
+    problem_dict = problem.model_dump(mode="json")
 
     return {
         "problem_definition": problem_dict,

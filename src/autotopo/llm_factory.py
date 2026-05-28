@@ -103,6 +103,17 @@ def _create_llm(
             temperature=temperature,
         )
 
+    if provider == "bailian":
+        # 阿里云百炼平台 — 走 OpenAI 兼容接口
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model,
+            base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key=os.environ.get("DASHSCOPE_API_KEY", ""),
+            temperature=temperature,
+        )
+
     if provider == "ollama":
         from langchain_community.chat_models import ChatOllama
 

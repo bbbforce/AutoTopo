@@ -30,6 +30,7 @@ output/
 *.png
 *.jpg
 *.jpeg
+*.log
 !examples/*.png
 
 # ─── 系统文件 ───

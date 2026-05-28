@@ -20,7 +20,7 @@ from autotopo.state import AutoTopoState
 
 EVALUATOR_SYSTEM_PROMPT = """\
 你是一个拓扑优化结果质量评估专家。你需要分析拓扑优化的密度分布结果图，
-识别以下常见缺陷并给出修正建议：
+识别以下常见缺陷并以 JSON 格式给出修正建议：
 
 ## 缺陷类型
 
@@ -42,6 +42,24 @@ EVALUATOR_SYSTEM_PROMPT = """\
 - 如果有缺陷，评估严重程度 (minor/moderate/severe)
 - 给出具体的参数调整建议（参数名、当前值、建议值、理由）
 - 如果结果清晰且无明显缺陷（黑白分明、结构连通、无棋盘格），标记为无缺陷
+
+请确保输出的 JSON 结构与字段完全匹配以下示例：
+```json
+{
+  "has_defects": true,
+  "defect_types": ["gray_elements"],
+  "severity": "minor",
+  "suggested_fixes": [
+    {
+      "parameter": "penal",
+      "current_value": 3.0,
+      "suggested_value": 4.0,
+      "reason": "通过增大罚因子来抑制灰度单元"
+    }
+  ],
+  "reasoning": "密度分布图中有轻微的灰色渐变区域"
+}
+```
 """
 
 
@@ -70,7 +88,7 @@ def evaluate_result(state: AutoTopoState) -> dict[str, Any]:
     ]
 
     evaluation: EvaluationResult = llm.invoke(messages)
-    eval_dict = evaluation.model_dump()
+    eval_dict = evaluation.model_dump(mode="json")
 
     # 更新历史记录
     history = list(state.get("history", []))
@@ -103,22 +121,40 @@ def should_retry(state: AutoTopoState) -> str:
 
 
 def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
-    """反馈修正节点：根据评估建议调整参数。"""
+    """反馈修正节点：根据评估建议调整参数。
+
+    改进逻辑：
+    - 参数只增不减（对于 penal 和 rmin），避免震荡
+    - 步进限幅：每次调整不超过当前值的 50%
+    """
     evaluation = state.get("evaluation", {})
     current_params = dict(state.get("current_params", {}))
 
+    # 安全边界
+    BOUNDS = {
+        "penal": (1.0, 10.0),
+        "rmin": (0.5, 5.0),
+        "volfrac": (0.1, 0.9),
+    }
+
     for fix in evaluation.get("suggested_fixes", []):
         param_name = fix["parameter"]
-        suggested_value = fix["suggested_value"]
+        suggested = fix["suggested_value"]
+        current = current_params.get(param_name, suggested)
 
-        # 安全边界检查
-        if param_name == "penal":
-            current_params["penal"] = min(max(suggested_value, 1.0), 10.0)
-        elif param_name == "rmin":
-            current_params["rmin"] = min(max(suggested_value, 0.5), 5.0)
+        if param_name in ("penal", "rmin"):
+            # 只增不减：取 max(current, suggested)
+            target = max(current, suggested)
+            # 步进限幅：最多增加 50%
+            max_step = current * 0.5
+            target = min(target, current + max_step)
         elif param_name == "volfrac":
-            current_params["volfrac"] = min(max(suggested_value, 0.1), 0.9)
+            target = suggested
         else:
-            current_params[param_name] = suggested_value
+            current_params[param_name] = suggested
+            continue
+
+        lo, hi = BOUNDS.get(param_name, (float("-inf"), float("inf")))
+        current_params[param_name] = round(min(max(target, lo), hi), 2)
 
     return {"current_params": current_params}

@@ -30,7 +30,7 @@ class JaxFemEngine(TopoEngine):
         self.penal: float = 3.0
         self.rmin: float = 1.5
         self.E0: float = 1.0
-        self.Emin: float = 1e-9
+        self.Emin: float = 1e-6
         self.nu: float = 0.3
         self.densities: Optional[np.ndarray] = None
         self._ke: Optional[np.ndarray] = None
@@ -345,7 +345,7 @@ class JaxFemEngine(TopoEngine):
         while (l2 - l1) / (l1 + l2 + 1e-12) > 1e-3:
             lmid = 0.5 * (l2 + l1)
             x_new = np.maximum(
-                0.001,
+                0.01,
                 np.maximum(
                     x - move,
                     np.minimum(
