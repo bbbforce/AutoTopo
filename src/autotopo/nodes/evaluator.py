@@ -19,13 +19,13 @@ from autotopo.state import AutoTopoState
 
 
 EVALUATOR_SYSTEM_PROMPT = """\
-你是一个拓扑优化结果质量评估专家。你需要分析拓扑优化的密度分布结果图，
+你是一个拓扑优化结果质量评估专家。你需要分析拓扑优化的密度分布结果图，深色部分为实体，白色部分为孔洞
 识别以下常见缺陷并以 JSON 格式给出修正建议：
 
 ## 缺陷类型
 
 1. **灰度单元 (gray_elements)**：密度值处于 0 和 1 之间的中间区域，
-   表现为灰色区域。修正方案：增大 SIMP 罚因子 (penal)，或启用 Heaviside 投影。
+   表现为灰色区域。修正方案：增大 SIMP 惩罚因子 (penal)，或增大过滤半径 (rmin)，或启用 Heaviside 投影。
 
 2. **棋盘格 (checkerboard)**：相邻单元密度值交替为 0 和 1，
    呈现棋盘状图案。修正方案：增大过滤半径 (rmin)。
@@ -124,16 +124,18 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
     """反馈修正节点：根据评估建议调整参数。
 
     改进逻辑：
-    - 参数只增不减（对于 penal 和 rmin），避免震荡
-    - 步进限幅：每次调整不超过当前值的 50%
+    - penal：惩罚因子原则上只增不减（强制单向增大），防止回退导致灰色单元增多
+    - rmin：过滤半径依据缺陷双向更新，有棋盘格时增大，仅有灰色单元时减小，防止过度模糊
+    - 步进限幅：防止参数调整过猛导致收敛震荡
     """
     evaluation = state.get("evaluation", {})
+    defect_types = evaluation.get("defect_types", [])
     current_params = dict(state.get("current_params", {}))
 
     # 安全边界
     BOUNDS = {
         "penal": (1.0, 10.0),
-        "rmin": (0.5, 15.0),
+        "rmin": (0.5, 4.0),
         "volfrac": (0.1, 0.9),
     }
 
@@ -142,12 +144,32 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
         suggested = fix["suggested_value"]
         current = current_params.get(param_name, suggested)
 
-        if param_name in ("penal", "rmin"):
-            # 只增不减：取 max(current, suggested)
+        if param_name == "penal":
+            # penal 只增不减
             target = max(current, suggested)
-            # 步进限幅：最多增加 50%
+            # 步进限幅：每次最多增加 50%
             max_step = current * 0.5
             target = min(target, current + max_step)
+        elif param_name == "rmin":
+            # rmin 依据具体缺陷进行双向调整
+            if "checkerboard" in defect_types:
+                # 存在棋盘格时，必须增大以平滑数值不稳定
+                target = max(current, suggested)
+                # 步进限幅：最多增加 50%
+                max_step = current * 0.5
+                target = min(target, current + max_step)
+            elif "gray_elements" in defect_types and not any(d == "checkerboard" for d in defect_types):
+                # 仅存在灰色单元且没有棋盘格时，允许减小 rmin 以收紧过渡边界，减少灰色单元
+                target = min(current, suggested)
+                # 步进限幅：最多减小 50%
+                max_step = current * 0.5
+                target = max(target, current - max_step)
+            else:
+                # 其它情况（如无相关缺陷或混合缺陷），允许双向调整
+                target = suggested
+                # 步进限幅：最多调整 50%
+                max_step = current * 0.5
+                target = min(max(target, current - max_step), current + max_step)
         elif param_name == "volfrac":
             target = suggested
         else:
@@ -158,3 +180,4 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
         current_params[param_name] = round(min(max(target, lo), hi), 2)
 
     return {"current_params": current_params}
+
