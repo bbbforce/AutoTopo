@@ -26,7 +26,7 @@ class TestJaxFemEngine:
         assert engine.nelx == 30
         assert engine.nely == 10
         assert engine.densities is not None
-        assert engine.densities.shape == (10, 30)
+        assert engine.densities.shape == (30 * 10,)  # 1D 数组，列优先编号
 
     def test_optimize_runs(self):
         engine = JaxFemEngine()
@@ -114,3 +114,29 @@ class TestJaxFemEngine:
 
         assert result.iterations == 30
         assert result.densities.shape == (10, 30)
+
+    def test_heaviside_projection(self):
+        """启用 Heaviside 投影(ft=2)应显著减少灰度单元。"""
+        # ft=1 基线
+        engine1 = JaxFemEngine()
+        engine1.setup(_cantilever_problem(max_iter=50))
+        r1 = engine1.optimize(max_iter=50, ft=1)
+
+        # ft=2 Heaviside
+        engine2 = JaxFemEngine()
+        engine2.setup(_cantilever_problem(max_iter=50))
+        r2 = engine2.optimize(max_iter=50, ft=2)
+
+        # 灰度单元比例：密度值在 (0.1, 0.9) 之间的单元
+        gray1 = np.sum((r1.densities > 0.1) & (r1.densities < 0.9))
+        gray2 = np.sum((r2.densities > 0.1) & (r2.densities < 0.9))
+        assert gray2 <= gray1, f"Heaviside 应减少灰度单元: ft=1有{gray1}个, ft=2有{gray2}个"
+
+    def test_heaviside_density_bounds(self):
+        """启用 Heaviside 后密度值仍应在 [0, 1] 范围内。"""
+        engine = JaxFemEngine()
+        engine.setup(_cantilever_problem(max_iter=30))
+        result = engine.optimize(max_iter=30, ft=2)
+
+        assert np.all(result.densities >= -0.01), f"最小密度: {result.densities.min()}"
+        assert np.all(result.densities <= 1.01), f"最大密度: {result.densities.max()}"

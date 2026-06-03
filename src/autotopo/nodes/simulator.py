@@ -46,7 +46,7 @@ def run_simulation(state: AutoTopoState) -> dict[str, Any]:
     if state.get("current_params"):
         params.update(state["current_params"])
 
-    # 初始化引擎
+    # 每轮从均匀密度场（volfrac）重新开始优化
     engine = _get_engine()
     engine.setup(problem)
 
@@ -57,6 +57,11 @@ def run_simulation(state: AutoTopoState) -> dict[str, Any]:
         penal=params.get("penal", 3.0),
         rmin=params.get("rmin", 1.5),
         volfrac=params.get("volfrac", 0.5),
+        # ft=params.get("ft"),
+        # beta=params.get("beta"),
+        # beta_max=params.get("beta_max"),
+        # beta_interval=params.get("beta_interval"),
+        # eta=params.get("eta"),
     )
 
     # 导出结果图
@@ -66,9 +71,19 @@ def run_simulation(state: AutoTopoState) -> dict[str, Any]:
     img_path = str(output_dir / f"result_iter_{iteration}.{output_cfg.get('image_format', 'png')}")
     engine.export_image(img_path, dpi=output_cfg.get("dpi", 300))
 
+    # 导出当前轮收敛历史图
+    convergence_img_path = str(output_dir / f"convergence_iter_{iteration}.png")
+    from autotopo.utils.visualization import plot_convergence_history
+    plot_convergence_history(
+        result.compliance_history,
+        result.volume_history,
+        convergence_img_path,
+    )
+
     return {
         "density_field": result.densities,
         "result_image_path": img_path,
+        "convergence_image_path": convergence_img_path,
         "solve_result": {
             "compliance_history": result.compliance_history,
             "volume_history": result.volume_history,

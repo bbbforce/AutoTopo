@@ -34,6 +34,7 @@ class AutoTopoState(TypedDict, total=False):
     solve_result: dict[str, Any]             # 求解结果
     density_field: Any                       # 密度场数组
     result_image_path: str                   # 结果图路径
+    convergence_image_path: str               # 收敛历史图路径
 
     # ── 评估 & 反馈 ──
     evaluation: dict[str, Any]               # EvaluationResult.model_dump()

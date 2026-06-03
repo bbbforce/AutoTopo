@@ -157,3 +157,18 @@ class TestApplyFixes:
         }
         result = apply_fixes(state)
         assert result["current_params"]["penal"] == 3.0
+
+    def test_apply_ft_fix(self):
+        """ft 建议值（浮点数）应被转为整型采纳。"""
+        state = {
+            "evaluation": {
+                "suggested_fixes": [
+                    {"parameter": "ft", "current_value": 1.0,
+                     "suggested_value": 2.0, "reason": "test"},
+                ],
+            },
+            "current_params": {"ft": 1},
+        }
+        result = apply_fixes(state)
+        assert result["current_params"]["ft"] == 2
+        assert isinstance(result["current_params"]["ft"], int)

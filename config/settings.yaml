@@ -4,27 +4,75 @@
 llm:
   # 可选 provider: openai, deepseek, glm, ollama, bailian
   default_provider: "bailian"
+
   # 各 provider 配置
+  # ─────────────────────────────────────────────────────
+  # 通用参数说明：
+  #   api_key:            API 密钥（优先级高于环境变量，留空则回退到环境变量）
+  #   model:              模型名称
+  #   base_url:           服务商接口地址（OpenAI 官方可留空）
+  #   temperature:        采样温度
+  #   top_p:              核采样参数（null = 使用 API 默认值）
+  #   max_tokens:         最大输出 token 数（null = 使用 API 默认值）
+  #   reasoning_effort:   思考强度 'low'|'medium'|'high'|'max'（null = 使用 API 默认值）
+  #                       注：DeepSeek 会将 low/medium 映射为 high
+  #   thinking:           是否启用深度思考模式（true/false）
+  #   vision:             是否声明视觉能力
+  #   function_calling:   是否声明函数调用能力
+  #   json_output:        是否声明 JSON 输出能力
+  # ─────────────────────────────────────────────────────
   providers:
     openai:
+      api_key: null           # 留空则使用环境变量 OPENAI_API_KEY
       model: "gpt-4o"
+      base_url: null
       temperature: 0.1
-      # api_key 通过环境变量 OPENAI_API_KEY 设置
+      top_p: null
+      max_tokens: null
+      reasoning_effort: null
+      thinking: true
+      vision: true
+      function_calling: true
+      json_output: true
+
     deepseek:
+      api_key: null           # 留空则使用环境变量 DEEPSEEK_API_KEY
       model: "deepseek-v4-pro"
       base_url: "https://api.deepseek.com/v1"
       temperature: 0.1
-      # api_key 通过环境变量 DEEPSEEK_API_KEY 设置
+      top_p: null
+      max_tokens: null
+      reasoning_effort: null
+      thinking: true
+      vision: false
+      function_calling: true
+      json_output: true
+
     glm:
+      api_key: null           # 留空则使用环境变量 GLM_API_KEY
       model: "glm-5.1"
       base_url: "https://open.bigmodel.cn/api/paas/v4"
       temperature: 0.1
-      # api_key 通过环境变量 GLM_API_KEY 设置
+      top_p: null
+      max_tokens: null
+      reasoning_effort: null
+      thinking: true
+      vision: true
+      function_calling: true
+      json_output: true
+
     bailian:
-      model: "qwen3.6-plus"
+      api_key: null           # 留空则使用环境变量 DASHSCOPE_API_KEY
+      model: "kimi-k2.6"
       base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-      temperature: 0.3
-      # api_key 通过环境变量 DASHSCOPE_API_KEY 设置
+      temperature: 0.1
+      top_p: null
+      max_tokens: null
+      reasoning_effort: null
+      thinking: true
+      vision: true
+      function_calling: true
+      json_output: true
 
   # 视觉评估专用 provider（需支持图像输入）
   vision_provider: "bailian"
@@ -39,6 +87,7 @@ engine:
     volfrac: 0.5       # 体积分数
     penal: 3.0         # SIMP 罚因子
     rmin: 1.5          # 过滤半径
+    ft: 2              # 过滤类型: 0=灵敏度过滤, 1=密度过滤, 2=Heaviside投影
     max_iter: 200      # 最大优化迭代数
 
 # ─── 视觉评估反馈 ───

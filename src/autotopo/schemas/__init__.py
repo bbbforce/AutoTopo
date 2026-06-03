@@ -122,8 +122,14 @@ class OptParams(BaseModel):
     """优化参数"""
     penal: float = Field(default=3.0, description="SIMP 罚因子")
     rmin: float = Field(default=1.5, description="过滤半径")
+    ft: int = Field(default=1, description="过滤类型: 0=灵敏度过滤, 1=密度过滤, 2=Heaviside投影")
     max_iter: int = Field(default=200, description="最大优化迭代数")
     tol: float = Field(default=0.01, description="收敛容差")
+    # Heaviside 投影参数（ft=2 时生效）
+    beta: float = Field(default=1.0, description="Heaviside投影初始β值，控制投影锐度，越大边界越清晰")
+    beta_max: float = Field(default=32.0, description="Heaviside投影最大β值")
+    beta_interval: int = Field(default=40, description="β翻倍间隔（每隔多少迭代步β翻倍）")
+    eta: float = Field(default=0.5, description="Heaviside投影阈值η，通常取0.5")
 
 
 class OptimizationProblem(BaseModel):

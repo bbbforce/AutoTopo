@@ -37,10 +37,102 @@ def _save_output(state: AutoTopoState) -> dict[str, Any]:
         from autotopo.utils.io import save_json
         save_json(state["history"], str(output_dir / "evaluation_history.json"))
 
+    # 导出收敛历史图
+    solve_result = state.get("solve_result", {})
+    compliance_history = solve_result.get("compliance_history", [])
+    volume_history = solve_result.get("volume_history", [])
+    if compliance_history and volume_history:
+        from autotopo.utils.visualization import plot_convergence_history
+        plot_convergence_history(
+            compliance_history,
+            volume_history,
+            str(output_dir / "convergence_history.png"),
+        )
+
+    # 生成 Markdown 汇总报告
+    _generate_report(state, output_dir)
+
     # 最终结果图路径
     final_img = state.get("result_image_path", "")
 
     return {"output_path": str(output_dir), "result_image_path": final_img}
+
+
+def _generate_report(state: AutoTopoState, output_dir: Path) -> None:
+    """生成 Markdown 格式汇总报告。"""
+    problem = state.get("problem_definition", {})
+    params = state.get("current_params", {})
+    history = state.get("history", [])
+    evaluation = state.get("evaluation", {})
+    solve_result = state.get("solve_result", {})
+
+    lines = [
+        "# AutoTopo 优化报告\n",
+        f"## 问题描述\n",
+        f"{problem.get('description', 'N/A')}\n",
+        f"## 设计域\n",
+        f"| 参数 | 值 |",
+        f"|------|-----|",
+        f"| 网格 | {problem.get('domain', {}).get('nelx', '?')} × {problem.get('domain', {}).get('nely', '?')} |",
+        f"| 目标函数 | {problem.get('objective', 'minimize_compliance')} |",
+        f"| 体积分数 | {params.get('volfrac', '?')} |",
+        f"| 罚因子 | {params.get('penal', '?')} |",
+        f"| 过滤半径 | {params.get('rmin', '?')} |",
+        f"| 过滤类型 | ft={params.get('ft', 1)} |",
+        "",
+        f"## 求解结果\n",
+        f"- 迭代次数: {solve_result.get('iterations', '?')}",
+        f"- 收敛: {'是' if solve_result.get('converged') else '否'}",
+    ]
+
+    compliance = solve_result.get("compliance_history", [])
+    if compliance:
+        lines.append(f"- 最终柔度: {compliance[-1]:.4f}")
+
+    if state.get("result_image_path"):
+        lines.extend([
+            "",
+            f"## 结果图\n",
+            f"![topology result]({Path(state['result_image_path']).name})",
+        ])
+
+    convergence_img = output_dir / "convergence_history.png"
+    if convergence_img.exists():
+        lines.extend([
+            "",
+            f"## 收敛历史\n",
+            f"![convergence](convergence_history.png)",
+        ])
+
+    if history:
+        lines.extend([
+            "",
+            f"## 评估迭代记录\n",
+            f"| 迭代 | penal | rmin | 缺陷 | 严重度 |",
+            f"|------|-------|------|------|--------|",
+        ])
+        for h in history:
+            p = h.get("params", {})
+            e = h.get("evaluation", {})
+            defects = ", ".join(e.get("defect_types", []))
+            lines.append(
+                f"| {h.get('iteration', '?')} "
+                f"| {p.get('penal', '?')} "
+                f"| {p.get('rmin', '?')} "
+                f"| {defects or '无'} "
+                f"| {e.get('severity', '-')} |"
+            )
+
+    if evaluation:
+        lines.extend([
+            "",
+            f"## 最终评估\n",
+            f"- 存在缺陷: {'是' if evaluation.get('has_defects') else '否'}",
+            f"- 评估结论: {evaluation.get('reasoning', 'N/A')}",
+        ])
+
+    report_path = output_dir / "report.md"
+    report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def build_graph() -> StateGraph:

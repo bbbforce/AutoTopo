@@ -19,13 +19,16 @@ from autotopo.state import AutoTopoState
 
 
 EVALUATOR_SYSTEM_PROMPT = """\
-你是一个拓扑优化结果质量评估专家。你需要分析拓扑优化的密度分布结果图，深色部分为实体，白色部分为孔洞
-识别以下常见缺陷并以 JSON 格式给出修正建议：
+你是一个拓扑优化结果质量评估专家。你将收到两张图片：
+1. **拓扑优化密度分布结果图**（第一张）：深色部分为实体，白色部分为孔洞
+2. **收敛历史曲线图**（第二张）：包含柔度（Compliance）和体积分数（Volume Fraction）随迭代步的变化
+
+请综合分析两张图片，识别以下常见缺陷并以 JSON 格式给出修正建议：
 
 ## 缺陷类型
 
 1. **灰度单元 (gray_elements)**：密度值处于 0 和 1 之间的中间区域，
-   表现为灰色区域。修正方案：增大 SIMP 惩罚因子 (penal)，或增大过滤半径 (rmin)，或启用 Heaviside 投影。
+   表现为灰色区域。修正方案：增大 SIMP 惩罚因子 (penal)，或增大过滤半径 (rmin)，或启用 Heaviside 投影（通过建议参数 ft=2）。
 
 2. **棋盘格 (checkerboard)**：相邻单元密度值交替为 0 和 1，
    呈现棋盘状图案。修正方案：增大过滤半径 (rmin)。
@@ -36,12 +39,17 @@ EVALUATOR_SYSTEM_PROMPT = """\
 4. **断裂 (disconnection)**：结构在载荷传递路径上出现断裂。
    通常是边界条件或载荷设置有误。
 
+## 收敛曲线分析要点
+- 柔度曲线是否已平稳收敛？若末段仍在剧烈波动，说明需增加迭代次数或调整参数
+- 体积分数是否稳定在目标值附近？若偏差较大，说明优化约束可能有问题
+- 若柔度曲线出现突变跳跃，可能是 β-continuation 的 β 翻倍导致的正常现象
+
 ## 输出要求
-- 仔细观察图片中的密度分布
+- 综合分析密度分布图和收敛曲线
 - 判断是否存在上述任何缺陷
 - 如果有缺陷，评估严重程度 (minor/moderate/severe)
 - 给出具体的参数调整建议（参数名、当前值、建议值、理由）
-- 如果结果清晰且无明显缺陷（黑白分明、结构连通、无棋盘格），标记为无缺陷
+- 如果结果清晰且无明显缺陷（黑白分明、结构连通、无棋盘格、收敛良好），标记为无缺陷
 
 请确保输出的 JSON 结构与字段完全匹配以下示例：
 ```json
@@ -57,7 +65,7 @@ EVALUATOR_SYSTEM_PROMPT = """\
       "reason": "通过增大罚因子来抑制灰度单元"
     }
   ],
-  "reasoning": "密度分布图中有轻微的灰色渐变区域"
+  "reasoning": "密度分布图中有轻微的灰色渐变区域，收敛曲线已基本平稳"
 }
 ```
 """
@@ -70,21 +78,39 @@ def evaluate_result(state: AutoTopoState) -> dict[str, Any]:
     img_path = state["result_image_path"]
     img_b64 = base64.b64encode(Path(img_path).read_bytes()).decode("utf-8")
 
+    # 读取收敛历史图（可选）
+    conv_img_path = state.get("convergence_image_path", "")
+    conv_b64 = ""
+    if conv_img_path and Path(conv_img_path).exists():
+        conv_b64 = base64.b64encode(Path(conv_img_path).read_bytes()).decode("utf-8")
+
     current_params = state.get("current_params", {})
     iteration = state.get("iteration", 0)
 
+    # 构建消息内容：文字 + 拓扑结果图 + 收敛曲线图
+    content_parts: list[dict] = [
+        {"type": "text", "text": (
+            f"这是第 {iteration + 1} 次优化的结果。\n"
+            f"当前参数：penal={current_params.get('penal', 3.0)}, "
+            f"rmin={current_params.get('rmin', 1.5)}, "
+            f"volfrac={current_params.get('volfrac', 0.5)}, "
+            f"ft={current_params.get('ft', 1)} (1=密度过滤, 2=Heaviside投影), "
+            # f"beta={current_params.get('beta', 1.0)}, "
+            # f"beta_max={current_params.get('beta_max', 64.0)}, "
+            # f"beta_interval={current_params.get('beta_interval', 40)}\n"
+            f"第一张图是拓扑优化密度分布结果，第二张图是收敛历史曲线。\n"
+            f"请综合两张图评估结果质量。"
+        )},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+    ]
+    if conv_b64:
+        content_parts.append(
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{conv_b64}"}}
+        )
+
     messages = [
         SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
-        HumanMessage(content=[
-            {"type": "text", "text": (
-                f"这是第 {iteration + 1} 次优化的结果图。\n"
-                f"当前参数：penal={current_params.get('penal', 3.0)}, "
-                f"rmin={current_params.get('rmin', 1.5)}, "
-                f"volfrac={current_params.get('volfrac', 0.5)}\n"
-                f"请评估结果质量。"
-            )},
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-        ]),
+        HumanMessage(content=content_parts),
     ]
 
     evaluation: EvaluationResult = llm.invoke(messages)
@@ -137,6 +163,10 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
         "penal": (1.0, 10.0),
         "rmin": (0.5, 4.0),
         "volfrac": (0.1, 0.9),
+        # "beta": (1.0, 1.0),   # beta 初始值锁定为 1.0，通过 continuation 自动增长
+        # "beta_max": (8.0, 128.0),
+        # "beta_interval": (10, 80),
+        # "eta": (0.3, 0.7),
     }
 
     for fix in evaluation.get("suggested_fixes", []):
@@ -172,6 +202,22 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
                 target = min(max(target, current - max_step), current + max_step)
         elif param_name == "volfrac":
             target = suggested
+        # elif param_name == "ft":
+        #     # ft (过滤类型) 必须是整型
+        #     current_params[param_name] = int(suggested)
+        #     continue
+        # elif param_name == "beta_interval":
+        #     # beta_interval 必须是整型
+        #     target = int(suggested)
+        #     lo, hi = BOUNDS.get(param_name, (10, 80))
+        #     current_params[param_name] = min(max(target, lo), hi)
+        #     continue
+        # elif param_name == "beta":
+        #     # beta 初始值锁定为 1.0
+        #     continue
+        # elif param_name in ("beta_max", "eta"):
+        #     # Heaviside 参数：直接采纳建议值，只做边界约束
+        #     target = suggested
         else:
             current_params[param_name] = suggested
             continue
