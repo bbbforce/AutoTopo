@@ -225,12 +225,16 @@ def _create_llm(
         kwargs["reasoning_effort"] = reasoning_effort
 
     model_kw: dict[str, Any] = extra_kwargs.pop("model_kwargs", {})
-    if thinking:
-        model_kw["thinking"] = {"type": "enabled"}
-    else:
-        model_kw["thinking"] = {"type": "disabled"}
     if model_kw:
         kwargs["model_kwargs"] = model_kw
+
+    extra_body: dict[str, Any] = extra_kwargs.pop("extra_body", {})
+    if thinking:
+        extra_body["thinking"] = {"type": "enabled"}
+    else:
+        extra_body["thinking"] = {"type": "disabled"}
+    if extra_body:
+        kwargs["extra_body"] = extra_body
 
     kwargs.update(extra_kwargs)
     return ChatOpenAI(**kwargs)
