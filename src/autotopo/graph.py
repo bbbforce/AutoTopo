@@ -67,18 +67,19 @@ def _generate_report(state: AutoTopoState, output_dir: Path) -> None:
     solve_result = state.get("solve_result", {})
 
     lines = [
-        "# AutoTopo 优化报告\n",
+        "# AutoTopo 优化报告 (FEniCS + dolfin-adjoint)\n",
         f"## 问题描述\n",
         f"{problem.get('description', 'N/A')}\n",
         f"## 设计域\n",
         f"| 参数 | 值 |",
         f"|------|-----|",
-        f"| 网格 | {problem.get('domain', {}).get('nelx', '?')} × {problem.get('domain', {}).get('nely', '?')} |",
+        f"| 尺寸 | {problem.get('domain', {}).get('width', '?')} × {problem.get('domain', {}).get('height', '?')} |",
+        f"| 网格分辨率 | {problem.get('domain', {}).get('mesh_resolution', '?')} |",
         f"| 目标函数 | {problem.get('objective', 'minimize_compliance')} |",
         f"| 体积分数 | {params.get('volfrac', '?')} |",
         f"| 罚因子 | {params.get('penal', '?')} |",
-        f"| 过滤半径 | {params.get('rmin', '?')} |",
-        f"| 过滤类型 | ft={params.get('ft', 1)} |",
+        f"| Helmholtz 过滤半径 | {params.get('rmin', '?')} |",
+        f"| 优化器 | {params.get('optimizer', 'L-BFGS-B')} |",
         "",
         f"## 求解结果\n",
         f"- 迭代次数: {solve_result.get('iterations', '?')}",

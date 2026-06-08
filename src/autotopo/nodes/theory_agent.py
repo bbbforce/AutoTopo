@@ -1,7 +1,7 @@
 """理论推导 Agent 节点。
 
 负责对标准库未覆盖的约束/目标函数进行力学公式推导，
-输出灵敏度分析的数学表达式。
+输出 FEniCS UFL 变分形式和 dolfin-adjoint 的使用方法。
 """
 
 from __future__ import annotations
@@ -16,32 +16,36 @@ from autotopo.state import AutoTopoState
 
 THEORY_SYSTEM_PROMPT = """\
 你是一个结构力学与拓扑优化理论专家。你的任务是为给定的约束类型或目标函数
-推导其在 SIMP (Solid Isotropic Material with Penalization) 框架下的灵敏度分析公式。
+推导其在 SIMP (Solid Isotropic Material with Penalization) 框架下的公式，
+并适配 FEniCS (DOLFIN 2019) + dolfin-adjoint 实现。
+
+关键：dolfin-adjoint 会自动记录所有 FEniCS 操作并通过伴随方法求灵敏度，
+因此你不需要手动推导灵敏度公式，只需要给出正确的正问题变分形式。
 
 输出要求：
 1. 明确写出约束/目标函数的数学表达式
-2. 推导其对密度变量 ρ_e 的灵敏度 (偏导数)
-3. 给出伴随方法 (adjoint method) 的具体步骤（如果适用）
+2. 给出 FEniCS UFL 变分形式的伪代码
+3. 说明如何在 dolfin-adjoint 中定义 ReducedFunctional
 4. 用 LaTeX 格式写数学公式
-5. 用伪代码描述计算流程
-6. 注明是否可以利用自动微分 (AD) 替代手动推导
+5. 注明 dolfin-adjoint 可自动求导，无需手动灵敏度推导
 
 示例 — von Mises 应力约束：
 - 目标：σ_vm(ρ) ≤ σ_allow
-- 灵敏度：dσ_vm/dρ_e 通过伴随方法求解
-- 需要额外求解伴随方程 K·λ = ∂σ_vm/∂u
+- UFL: sigma_vm = sqrt(inner(dev_sigma, dev_sigma))
+- ReducedFunctional: 对应力的 p-范数构建 ReducedFunctional
+- dolfin-adjoint 自动处理伴随
 """
 
 
 def theory_derivation(state: AutoTopoState) -> dict[str, Any]:
-    """理论推导节点：推导自定义约束的灵敏度公式。"""
+    """理论推导节点：推导自定义约束的变分形式。"""
     llm = get_llm()
 
     unknown = state.get("unknown_constraints", [])
     problem_yaml = state.get("problem_yaml", "")
 
     prompt = f"""\
-请为以下拓扑优化问题中的非标准约束推导灵敏度分析公式：
+请为以下拓扑优化问题中的非标准约束推导 FEniCS UFL 变分形式：
 
 ## 非标准约束类型
 {', '.join(unknown)}
@@ -51,7 +55,8 @@ def theory_derivation(state: AutoTopoState) -> dict[str, Any]:
 {problem_yaml}
 ```
 
-请按照系统提示中的格式要求，给出完整的数学推导和伪代码。
+请按照系统提示中的格式要求，给出完整的数学推导和 FEniCS UFL 伪代码。
+注意：dolfin-adjoint 会自动计算灵敏度，无需手动推导偏导数。
 """
 
     messages = [

@@ -1,9 +1,14 @@
-"""可视化工具：密度场绘图与结果导出。"""
+"""可视化工具：密度场绘图与结果导出。
+
+支持结构化矩形网格 (imshow) 和非结构三角网格 (tripcolor)。
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")  # 非交互式后端，适用于 Docker 无 GUI 环境
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -26,6 +31,58 @@ def plot_density_field(
     """
     fig, ax = plt.subplots(1, 1, figsize=(10, 5))
     ax.imshow(densities, cmap=cmap, origin="upper", vmin=0, vmax=1)
+    ax.set_title(title, fontsize=14)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_aspect("equal")
+    plt.tight_layout()
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return save_path
+
+
+def plot_fenics_density(
+    coordinates: np.ndarray,
+    cells: np.ndarray,
+    values: np.ndarray,
+    save_path: str | None = None,
+    *,
+    title: str = "Topology Optimization Result",
+    dpi: int = 300,
+    cmap: str = "gray_r",
+    show: bool = False,
+) -> str | None:
+    """绘制非结构三角网格上的密度场。
+
+    Parameters
+    ----------
+    coordinates : 节点坐标 (N, 2)
+    cells : 三角形单元连接 (M, 3)
+    values : 密度值 (M,) 或 (N,)
+    save_path : 保存路径
+    """
+    from matplotlib.tri import Triangulation
+
+    triang = Triangulation(coordinates[:, 0], coordinates[:, 1], cells)
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+
+    if len(values) == len(cells):
+        # 单元密度 → tripcolor
+        tc = ax.tripcolor(triang, values, cmap=cmap, vmin=0, vmax=1, shading="flat")
+    else:
+        # 节点密度 → tripcolor (Gouraud)
+        tc = ax.tripcolor(triang, values, cmap=cmap, vmin=0, vmax=1, shading="gouraud")
+
+    fig.colorbar(tc, ax=ax, shrink=0.8)
     ax.set_title(title, fontsize=14)
     ax.set_xlabel("x")
     ax.set_ylabel("y")

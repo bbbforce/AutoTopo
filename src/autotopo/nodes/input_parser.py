@@ -2,6 +2,8 @@
 
 接收用户文本描述 + 设计域/非设计域示意图，
 通过视觉 LLM 解析为结构化的 OptimizationProblem。
+
+适配 FEniCS (DOLFIN) + dolfin-adjoint 后端。
 """
 
 from __future__ import annotations
@@ -22,18 +24,21 @@ PARSER_SYSTEM_PROMPT = """\
 你是一个拓扑优化问题解析专家。你的任务是将用户的自然语言描述（可能附带设计域示意图）
 解析为结构化的 JSON 拓扑优化问题定义。
 
+本项目使用 FEniCS (DOLFIN) + dolfin-adjoint 引擎，采用 Gmsh 生成三角形非结构网格。
+
 关键要求：
 1. 精确识别设计域尺寸、材料参数、边界条件、载荷和约束
 2. 如果用户提供了设计域/非设计域的示意图，识别图中的非设计域区域（如孔洞、固定区域）
 3. 对于未明确指定的参数，使用合理的默认值
 4. 边界条件位置使用描述性字符串（如 "left_edge", "bottom_left_corner"）
 5. 载荷方向使用 [fx, fy] 格式的方向向量
+6. mesh_resolution 控制网格精细程度（值越小越精细），典型值 0.5~2.0
 
 常见拓扑优化问题模式：
 - MBB 梁：左端下角固定x,y，右端下角固定y，顶部中点施加向下集中力
-- 半对称 MBB 梁（对称面在左侧，通常用于仅计算右半边）：左边界施加对称/滚轴约束（symmetry/roller 或 fixed_x），右下角施加垂直约束（fixed_y），左上角施加向下集中力
-- 半对称 MBB 梁（对称面在右侧，通常用于仅计算左半边）：右边界施加对称/滚轴约束（symmetry/roller 或 fixed_x），左下角施加垂直约束（fixed_y），右上角施加向下集中力
-- 悬臂梁：左端全固定，右端中点施加向下集中力
+- 半对称 MBB 梁（对称面在左侧）：左边界 fixed_x，右下角 fixed_y，左上角向下力
+- 半对称 MBB 梁（对称面在右侧）：右边界 fixed_x，左下角 fixed_y，右上角向下力
+- 悬臂梁：左端 fixed，右端中点施加向下集中力
 - 桥梁：底部两端铰接，顶部分布载荷
 
 请确保输出的 JSON 结构与字段完全匹配以下示例：
@@ -43,8 +48,7 @@ PARSER_SYSTEM_PROMPT = """\
   "domain": {
     "width": 60.0,
     "height": 20.0,
-    "nelx": 60,
-    "nely": 20,
+    "mesh_resolution": 1.0,
     "non_design_regions": []
   },
   "material": {
@@ -75,9 +79,10 @@ PARSER_SYSTEM_PROMPT = """\
   ],
   "parameters": {
     "penal": 3.0,
-    "rmin": 1.5,
+    "rmin": 0.05,
     "max_iter": 200,
-    "tol": 0.01
+    "tol": 1e-6,
+    "optimizer": "L-BFGS-B"
   }
 }
 ```

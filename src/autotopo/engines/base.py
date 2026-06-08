@@ -26,12 +26,13 @@ class SolveResult:
 @dataclass
 class OptResult:
     """优化迭代最终结果"""
-    densities: np.ndarray                # 最终密度场
+    densities: Any                       # 最终密度场 (numpy 或 dolfin.Function)
     compliance_history: list[float]      # 柔度收敛历史
     volume_history: list[float]          # 体积分数历史
     iterations: int                      # 实际迭代次数
     converged: bool
     extra: dict[str, Any] = field(default_factory=dict)
+    mesh_info: dict[str, Any] = field(default_factory=dict)  # 网格元信息
 
 
 class TopoEngine(ABC):

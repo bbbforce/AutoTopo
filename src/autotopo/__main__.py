@@ -1,8 +1,8 @@
 """AutoTopo CLI 入口。
 
 用法:
-    python -m autotopo "设计一个悬臂梁..."
-    python -m autotopo --engine-only --nelx 60 --nely 20
+    python -m autotopo run "设计一个悬臂梁..."
+    python -m autotopo solve --preset cantilever --mesh-res 1.0
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="autotopo",
-        description="AutoTopo: 自主拓扑优化 AI 智能体工作流",
+        description="AutoTopo: 自主拓扑优化 AI 智能体工作流 (FEniCS + dolfin-adjoint)",
     )
     subparsers = parser.add_subparsers(dest="command", help="子命令")
 
@@ -29,14 +29,13 @@ def main() -> None:
     run_parser.add_argument("--provider", default=None, help="LLM Provider (openai/deepseek/glm/bailian)")
 
     # ── solve: 纯引擎求解（不依赖 LLM）──
-    solve_parser = subparsers.add_parser("solve", help="直接运行 SIMP 引擎（无需 LLM）")
+    solve_parser = subparsers.add_parser("solve", help="直接运行 FEniCS 引擎（无需 LLM）")
     solve_parser.add_argument("--preset", choices=["cantilever", "mbb", "bridge"], default="cantilever",
                               help="预设问题")
-    solve_parser.add_argument("--nelx", type=int, default=60, help="x方向单元数")
-    solve_parser.add_argument("--nely", type=int, default=20, help="y方向单元数")
+    solve_parser.add_argument("--mesh-res", type=float, default=1.0, help="Gmsh 网格特征尺寸")
     solve_parser.add_argument("--volfrac", type=float, default=0.5, help="体积分数")
     solve_parser.add_argument("--penal", type=float, default=3.0, help="SIMP 罚因子")
-    solve_parser.add_argument("--rmin", type=float, default=1.5, help="过滤半径")
+    solve_parser.add_argument("--rmin", type=float, default=0.05, help="Helmholtz 过滤半径比例")
     solve_parser.add_argument("--max-iter", type=int, default=200, help="最大迭代数")
     solve_parser.add_argument("--output", default="./output", help="输出目录")
 
@@ -60,7 +59,7 @@ def _run_workflow(args: argparse.Namespace) -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = str(Path(args.output) / f"run_{timestamp}")
 
-    print("🚀 AutoTopo AI 工作流启动")
+    print("🚀 AutoTopo AI 工作流启动 (FEniCS + dolfin-adjoint)")
     print(f"   问题: {args.prompt[:80]}...")
     print(f"   输出: {output_path}")
 
@@ -87,21 +86,22 @@ def _run_workflow(args: argparse.Namespace) -> None:
 
 
 def _run_engine(args: argparse.Namespace) -> None:
-    """直接运行引擎求解（不依赖 LLM）。"""
-    from autotopo.engines.jax_fem_engine import JaxFemEngine
+    """直接运行 FEniCS 引擎求解（不依赖 LLM）。"""
+    from autotopo.engines.dolfin_adjoint_engine import DolfinAdjointEngine
 
     presets = {
         "cantilever": {
-            "domain": {"nelx": args.nelx, "nely": args.nely},
+            "domain": {"width": 60.0, "height": 20.0, "mesh_resolution": args.mesh_res},
             "material": {"youngs_modulus": 1.0, "poissons_ratio": 0.3},
             "boundary_conditions": [{"type": "fixed", "location": "left_edge"}],
             "loads": [{"type": "point_force", "location": "right_center",
                        "magnitude": 1.0, "direction": [0, -1]}],
             "constraints": [{"type": "volume_fraction", "value": args.volfrac}],
-            "parameters": {"penal": args.penal, "rmin": args.rmin},
+            "parameters": {"penal": args.penal, "rmin": args.rmin,
+                           "max_iter": args.max_iter, "optimizer": "L-BFGS-B"},
         },
         "mbb": {
-            "domain": {"nelx": args.nelx, "nely": args.nely},
+            "domain": {"width": 60.0, "height": 20.0, "mesh_resolution": args.mesh_res},
             "material": {"youngs_modulus": 1.0, "poissons_ratio": 0.3},
             "boundary_conditions": [
                 {"type": "fixed_x", "location": "left_edge"},
@@ -110,10 +110,11 @@ def _run_engine(args: argparse.Namespace) -> None:
             "loads": [{"type": "point_force", "location": "top_left",
                        "magnitude": 1.0, "direction": [0, -1]}],
             "constraints": [{"type": "volume_fraction", "value": args.volfrac}],
-            "parameters": {"penal": args.penal, "rmin": args.rmin},
+            "parameters": {"penal": args.penal, "rmin": args.rmin,
+                           "max_iter": args.max_iter, "optimizer": "L-BFGS-B"},
         },
         "bridge": {
-            "domain": {"nelx": args.nelx, "nely": args.nely},
+            "domain": {"width": 60.0, "height": 20.0, "mesh_resolution": args.mesh_res},
             "material": {"youngs_modulus": 1.0, "poissons_ratio": 0.3},
             "boundary_conditions": [
                 {"type": "fixed", "location": "bottom_left"},
@@ -122,15 +123,16 @@ def _run_engine(args: argparse.Namespace) -> None:
             "loads": [{"type": "point_force", "location": "top_center",
                        "magnitude": 1.0, "direction": [0, -1]}],
             "constraints": [{"type": "volume_fraction", "value": args.volfrac}],
-            "parameters": {"penal": args.penal, "rmin": args.rmin},
+            "parameters": {"penal": args.penal, "rmin": args.rmin,
+                           "max_iter": args.max_iter, "optimizer": "L-BFGS-B"},
         },
     }
 
     problem = presets[args.preset]
-    print(f"🔧 SIMP 引擎求解: {args.preset}")
-    print(f"   网格: {args.nelx}×{args.nely}, volfrac={args.volfrac}, penal={args.penal}")
+    print(f"🔧 FEniCS + dolfin-adjoint 引擎求解: {args.preset}")
+    print(f"   网格分辨率: {args.mesh_res}, volfrac={args.volfrac}, penal={args.penal}")
 
-    engine = JaxFemEngine()
+    engine = DolfinAdjointEngine()
     engine.setup(problem)
     result = engine.optimize(max_iter=args.max_iter, volfrac=args.volfrac,
                              penal=args.penal, rmin=args.rmin)
@@ -143,7 +145,8 @@ def _run_engine(args: argparse.Namespace) -> None:
     print(f"\n✅ 优化完成!")
     print(f"   迭代次数: {result.iterations}")
     print(f"   收敛: {result.converged}")
-    print(f"   最终柔度: {result.compliance_history[-1]:.4f}")
+    if result.compliance_history:
+        print(f"   最终柔度: {result.compliance_history[-1]:.4f}")
     print(f"   结果图: {img_path}")
 
 

@@ -1,7 +1,7 @@
 [project]
 name = "autotopo"
-version = "0.1.0"
-description = "自主拓扑优化 AI 智能体工作流"
+version = "0.2.0"
+description = "自主拓扑优化 AI 智能体工作流 (FEniCS + dolfin-adjoint)"
 requires-python = ">=3.10"
 dependencies = [
     # LangGraph 工作流
@@ -20,13 +20,15 @@ dependencies = [
     # 可视化
     "matplotlib>=3.8",
     "Pillow>=10.0",
+    # 网格生成与转换
+    "gmsh>=4.12",
+    "meshio>=5.3",
 ]
 
+# 注：FEniCS (DOLFIN 2019) + dolfin-adjoint 通过 Docker 容器提供，
+# 不在 pip 依赖中声明。容器名: dolfin-adjoint
+
 [project.optional-dependencies]
-jaxfem = [
-    "jax[cpu]>=0.4",
-    "jaxlib>=0.4",
-]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",

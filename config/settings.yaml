@@ -79,16 +79,16 @@ llm:
 
 # ─── 仿真引擎 ───
 engine:
-  backend: "jax_fem"
-  # 2D 默认参数
+  backend: "dolfin_adjoint"
+  # 默认优化参数
   default_params:
-    nelx: 60           # x方向单元数
-    nely: 30           # y方向单元数
-    volfrac: 0.5       # 体积分数
-    penal: 3.0         # SIMP 罚因子
-    rmin: 1.5          # 过滤半径
-    ft: 2              # 过滤类型: 0=灵敏度过滤, 1=密度过滤, 2=Heaviside投影
-    max_iter: 200      # 最大优化迭代数
+    mesh_resolution: 1.0     # Gmsh 特征网格尺寸
+    volfrac: 0.5             # 体积分数
+    penal: 3.0               # SIMP 罚因子
+    rmin: 0.05               # Helmholtz 过滤半径（相对域尺寸的比例）
+    max_iter: 200            # 最大优化迭代数
+    tol: 1.0e-6              # 优化收敛容差
+    optimizer: "L-BFGS-B"    # scipy 优化器
 
 # ─── 视觉评估反馈 ───
 evaluation:

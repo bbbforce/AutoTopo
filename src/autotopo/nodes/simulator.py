@@ -1,6 +1,6 @@
 """仿真调度节点。
 
-负责初始化引擎、执行优化迭代、生成结果图。
+负责初始化 FEniCS + dolfin-adjoint 引擎、执行优化迭代、生成结果图。
 """
 
 from __future__ import annotations
@@ -24,11 +24,11 @@ def _load_config() -> dict:
 def _get_engine() -> TopoEngine:
     """根据配置实例化仿真引擎。"""
     config = _load_config()
-    backend = config.get("engine", {}).get("backend", "jax_fem")
+    backend = config.get("engine", {}).get("backend", "dolfin_adjoint")
 
-    if backend == "jax_fem":
-        from autotopo.engines.jax_fem_engine import JaxFemEngine
-        return JaxFemEngine()
+    if backend == "dolfin_adjoint":
+        from autotopo.engines.dolfin_adjoint_engine import DolfinAdjointEngine
+        return DolfinAdjointEngine()
     else:
         raise ValueError(f"不支持的引擎后端: {backend}")
 
@@ -46,22 +46,17 @@ def run_simulation(state: AutoTopoState) -> dict[str, Any]:
     if state.get("current_params"):
         params.update(state["current_params"])
 
-    # 每轮从均匀密度场（volfrac）重新开始优化
+    # 每轮从均匀密度场重新开始优化
     engine = _get_engine()
     engine.setup(problem)
 
     # 执行优化
     result = engine.optimize(
         max_iter=params.get("max_iter", 200),
-        tol=params.get("tol", 0.01),
+        tol=params.get("tol", 1e-6),
         penal=params.get("penal", 3.0),
-        rmin=params.get("rmin", 1.5),
+        rmin=params.get("rmin", 0.05),
         volfrac=params.get("volfrac", 0.5),
-        # ft=params.get("ft"),
-        # beta=params.get("beta"),
-        # beta_max=params.get("beta_max"),
-        # beta_interval=params.get("beta_interval"),
-        # eta=params.get("eta"),
     )
 
     # 导出结果图
@@ -73,12 +68,15 @@ def run_simulation(state: AutoTopoState) -> dict[str, Any]:
 
     # 导出当前轮收敛历史图
     convergence_img_path = str(output_dir / f"convergence_iter_{iteration}.png")
-    from autotopo.utils.visualization import plot_convergence_history
-    plot_convergence_history(
-        result.compliance_history,
-        result.volume_history,
-        convergence_img_path,
-    )
+    if hasattr(engine, 'get_convergence_image'):
+        engine.get_convergence_image(convergence_img_path)
+    else:
+        from autotopo.utils.visualization import plot_convergence_history
+        plot_convergence_history(
+            result.compliance_history,
+            result.volume_history,
+            convergence_img_path,
+        )
 
     return {
         "density_field": result.densities,
@@ -89,6 +87,7 @@ def run_simulation(state: AutoTopoState) -> dict[str, Any]:
             "volume_history": result.volume_history,
             "iterations": result.iterations,
             "converged": result.converged,
+            "mesh_info": result.mesh_info,
         },
         "current_params": params,
     }

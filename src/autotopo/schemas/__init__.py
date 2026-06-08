@@ -2,6 +2,8 @@
 
 用于 LLM 结构化输出 (with_structured_output)，
 解析后可序列化为 YAML / JSON。
+
+适配 FEniCS (DOLFIN) + dolfin-adjoint 后端。
 """
 
 from __future__ import annotations
@@ -68,8 +70,10 @@ class DomainSpec(BaseModel):
     """设计域规格"""
     width: float = Field(description="设计域宽度")
     height: float = Field(description="设计域高度")
-    nelx: int = Field(default=60, description="x方向单元数")
-    nely: int = Field(default=30, description="y方向单元数")
+    mesh_resolution: float = Field(
+        default=1.0,
+        description="Gmsh 网格特征尺寸 (控制网格精细程度，越小越精细)",
+    )
     non_design_regions: List[NonDesignRegion] = Field(
         default_factory=list,
         description="非设计域区域列表（从图片中识别）",
@@ -95,8 +99,8 @@ class BoundaryCondition(BaseModel):
     """边界条件"""
     type: BCType
     location: str = Field(description="位置描述, 如 'left_edge', 'bottom_left_corner'")
-    node_indices: Optional[List[int]] = Field(
-        default=None, description="具体节点索引（解析后填充）"
+    value: Optional[List[float]] = Field(
+        default=None, description="位移值 [ux, uy]（displacement BC 时使用）"
     )
 
 
@@ -106,9 +110,6 @@ class LoadSpec(BaseModel):
     location: str = Field(description="施加位置描述")
     magnitude: float = Field(description="载荷大小")
     direction: List[float] = Field(description="方向向量 [fx, fy]")
-    node_indices: Optional[List[int]] = Field(
-        default=None, description="具体节点索引（解析后填充）"
-    )
 
 
 class ConstraintSpec(BaseModel):
@@ -121,15 +122,16 @@ class ConstraintSpec(BaseModel):
 class OptParams(BaseModel):
     """优化参数"""
     penal: float = Field(default=3.0, description="SIMP 罚因子")
-    rmin: float = Field(default=1.5, description="过滤半径")
-    ft: int = Field(default=1, description="过滤类型: 0=灵敏度过滤, 1=密度过滤, 2=Heaviside投影")
+    rmin: float = Field(
+        default=0.05,
+        description="Helmholtz 过滤半径（相对域最大尺寸的比例，如 0.05 表示 5%）",
+    )
     max_iter: int = Field(default=200, description="最大优化迭代数")
-    tol: float = Field(default=0.01, description="收敛容差")
-    # Heaviside 投影参数（ft=2 时生效）
-    beta: float = Field(default=1.0, description="Heaviside投影初始β值，控制投影锐度，越大边界越清晰")
-    beta_max: float = Field(default=32.0, description="Heaviside投影最大β值")
-    beta_interval: int = Field(default=40, description="β翻倍间隔（每隔多少迭代步β翻倍）")
-    eta: float = Field(default=0.5, description="Heaviside投影阈值η，通常取0.5")
+    tol: float = Field(default=1e-6, description="优化收敛容差")
+    optimizer: str = Field(
+        default="L-BFGS-B",
+        description="优化器名称 (L-BFGS-B / SLSQP 等)",
+    )
 
 
 class OptimizationProblem(BaseModel):
