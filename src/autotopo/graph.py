@@ -12,7 +12,12 @@ import yaml
 from langgraph.graph import END, StateGraph
 
 from autotopo.nodes.codegen_agent import code_generation
-from autotopo.nodes.evaluator import apply_fixes, evaluate_result, should_retry
+from autotopo.nodes.evaluator import (
+    apply_fixes,
+    evaluate_result,
+    prepare_final_refine,
+    should_retry,
+)
 from autotopo.nodes.input_parser import parse_input
 from autotopo.nodes.router import route_decision, route_problem
 from autotopo.nodes.simulator import run_simulation
@@ -65,6 +70,7 @@ def _generate_report(state: AutoTopoState, output_dir: Path) -> None:
     history = state.get("history", [])
     evaluation = state.get("evaluation", {})
     solve_result = state.get("solve_result", {})
+    timings = solve_result.get("timings", {})
 
     lines = [
         "# AutoTopo 优化报告 (FEniCS + dolfin-adjoint)\n",
@@ -82,13 +88,26 @@ def _generate_report(state: AutoTopoState, output_dir: Path) -> None:
         f"| 优化器 | {params.get('optimizer', 'SLSQP')} |",
         "",
         f"## 求解结果\n",
+        f"- 求解阶段: {solve_result.get('solve_stage', state.get('solve_stage', '?'))}",
         f"- 迭代次数: {solve_result.get('iterations', '?')}",
         f"- 收敛: {'是' if solve_result.get('converged') else '否'}",
+        f"- 早停: {'是' if solve_result.get('early_stopped') else '否'}",
     ]
 
     compliance = solve_result.get("compliance_history", [])
     if compliance:
         lines.append(f"- 最终柔度: {compliance[-1]:.4f}")
+
+    if timings:
+        lines.extend([
+            "",
+            f"## 性能统计\n",
+            f"| 阶段 | 耗时(s) |",
+            f"|------|---------|",
+        ])
+        for key in ["mesh", "setup", "optimization", "export", "total"]:
+            if key in timings:
+                lines.append(f"| {key} | {timings[key]:.3f} |")
 
     if state.get("result_image_path"):
         lines.extend([
@@ -149,6 +168,7 @@ def build_graph() -> StateGraph:
     workflow.add_node("run_simulation", run_simulation)
     workflow.add_node("evaluate_result", evaluate_result)
     workflow.add_node("apply_fixes", apply_fixes)
+    workflow.add_node("prepare_final_refine", prepare_final_refine)
     workflow.add_node("save_output", _save_output)
 
     # ── 定义边 ──
@@ -182,12 +202,16 @@ def build_graph() -> StateGraph:
         should_retry,
         {
             "retry": "apply_fixes",  # 存在缺陷 → 修正
+            "final": "prepare_final_refine",  # 预览通过 → 最终精修
             "accept": "save_output",  # 质量合格 → 保存
         },
     )
 
     # 修正 → 重新仿真（循环）
     workflow.add_edge("apply_fixes", "run_simulation")
+
+    # 最终精修 → 重新仿真一次
+    workflow.add_edge("prepare_final_refine", "run_simulation")
 
     # 保存 → 结束
     workflow.add_edge("save_output", END)

@@ -31,6 +31,9 @@ class AutoTopoState(TypedDict, total=False):
 
     # ── 仿真 ──
     current_params: dict[str, Any]           # 当前优化参数
+    solve_profile: str                       # "preview_refine" | "final_only" | "preview_only"
+    solve_stage: str                         # "preview" | "final"
+    final_refine_done: bool                  # 是否已执行或跳过最终精修
     solve_result: dict[str, Any]             # 求解结果
     density_field: Any                       # 密度场数组
     result_image_path: str                   # 结果图路径

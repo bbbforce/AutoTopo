@@ -45,8 +45,11 @@ class FakeDolfinAdjointEngine(DolfinAdjointEngine):
 
         if path.name == "result.json":
             path.write_text(json.dumps({
+                "solve_stage": "preview",
                 "iterations": 3,
                 "converged": True,
+                "early_stopped": True,
+                "timings": {"mesh": 0.1, "setup": 0.2, "optimization": 0.3, "export": 0.4, "total": 1.0},
                 "compliance_history": [10.0, 7.0, 5.0],
                 "volume_history": [0.4, 0.4, 0.4],
                 "mesh_info": {"num_cells": 12, "num_vertices": 9},
@@ -90,6 +93,20 @@ class TestDolfinAdjointEngine:
         assert result.iterations == 3
         assert result.densities.shape == (2, 3)
         assert result.compliance_history[-1] == 5.0
+        assert result.extra["solve_stage"] == "preview"
+        assert result.extra["early_stopped"] is True
+        assert result.extra["timings"]["total"] == 1.0
+
+    def test_optimize_sends_early_stop_config(self):
+        problem = _cantilever_problem(volfrac=0.4)
+        problem["early_stop"] = {"enabled": True, "min_iter": 5, "window": 3, "rel_delta": 0.01}
+        engine = FakeDolfinAdjointEngine()
+        engine.setup(problem)
+
+        engine.optimize(max_iter=7)
+
+        assert engine.sent_problem["early_stop"]["min_iter"] == 5
+        assert engine.sent_problem["early_stop"]["window"] == 3
 
     def test_export_images_after_optimize(self, tmp_path):
         engine = FakeDolfinAdjointEngine()

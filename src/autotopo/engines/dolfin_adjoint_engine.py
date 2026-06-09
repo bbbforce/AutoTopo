@@ -128,7 +128,7 @@ class DolfinAdjointEngine(TopoEngine):
 
         # 容器内路径
         container_input = f"{CONTAINER_WORK_DIR}/problem.json"
-        container_output = f"{CONTAINER_WORK_DIR}/output"
+        container_output = f"{CONTAINER_WORK_DIR}/{Path(local_tmp).name}/output"
 
         # ── Step 1: 准备容器工作目录 ──
         self._docker_exec(f"mkdir -p {CONTAINER_WORK_DIR}")
@@ -142,14 +142,12 @@ class DolfinAdjointEngine(TopoEngine):
               f"volfrac={params.get('volfrac', 0.5)}, max_iter={max_iter}")
 
         cmd = (
-            f"python3 {CONTAINER_WORK_DIR}/solver_runner.py "
+            f"python3 -u {CONTAINER_WORK_DIR}/solver_runner.py "
             f"--input {container_input} "
             f"--output-dir {container_output}"
         )
         returncode, stdout, stderr = self._docker_exec(cmd, capture=True)
 
-        if stdout:
-            print(stdout)
         if returncode != 0:
             error_msg = f"容器内求解失败 (exit code {returncode})"
             if stderr:
@@ -189,6 +187,12 @@ class DolfinAdjointEngine(TopoEngine):
             volume_history=self._result.get("volume_history", []),
             iterations=self._result.get("iterations", 0),
             converged=self._result.get("converged", False),
+            extra={
+                "timings": self._result.get("timings", {}),
+                "solve_stage": self._result.get("solve_stage", problem.get("solve_stage")),
+                "early_stopped": self._result.get("early_stopped", False),
+                "early_stop_reason": self._result.get("early_stop_reason"),
+            },
             mesh_info=self._result.get("mesh_info", {}),
         )
 
@@ -253,10 +257,19 @@ class DolfinAdjointEngine(TopoEngine):
         full_cmd = ["docker", "exec", self.container, "bash", "-c", cmd]
 
         if capture:
-            proc = subprocess.run(
-                full_cmd, capture_output=True, text=True, timeout=3600,
+            proc = subprocess.Popen(
+                full_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
             )
-            return proc.returncode, proc.stdout, proc.stderr
+            output_lines: list[str] = []
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                print(line, end="", flush=True)
+                output_lines.append(line)
+            return proc.wait(timeout=3600), "".join(output_lines), ""
         else:
             subprocess.run(full_cmd, check=True, timeout=60)
             return 0, "", ""

@@ -14,7 +14,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from autotopo.llm_factory import get_llm
-from autotopo.schemas import EvaluationResult, ParameterAdjustment
+from autotopo.schemas import EvaluationResult
 from autotopo.state import AutoTopoState
 
 
@@ -36,7 +36,7 @@ EVALUATOR_SYSTEM_PROMPT = """\
    呈现棋盘状图案。修正方案：增大 Helmholtz 过滤半径 (rmin)。
 
 3. **孤岛 (island)**：出现与主结构断开的小块材料区域。
-   修正方案：降低体积分数约束或增大过滤半径。
+   修正方案：增大过滤半径或调整惩罚因子。不得修改体积分数约束。
 
 4. **断裂 (disconnection)**：结构在载荷传递路径上出现断裂。
    通常是边界条件或载荷设置有误。
@@ -50,7 +50,8 @@ EVALUATOR_SYSTEM_PROMPT = """\
 - 判断是否存在上述任何缺陷
 - 如果有缺陷，评估严重程度 (minor/moderate/severe)
 - 给出具体的参数调整建议（参数名、当前值、建议值、理由）
-- 可调整参数：penal (SIMP罚因子), rmin (Helmholtz过滤半径比例), volfrac (体积分数)
+- 可调整参数仅限：penal (SIMP罚因子), rmin (Helmholtz过滤半径比例)
+- 严禁建议或修改 volfrac / volume_fraction。体积分数是用户定义的问题约束，不属于反馈修正参数。
 - 如果结果清晰且无明显缺陷（黑白分明、结构连通、无棋盘格、收敛良好），标记为无缺陷
 
 请确保输出的 JSON 结构与字段完全匹配以下示例：
@@ -131,18 +132,40 @@ def evaluate_result(state: AutoTopoState) -> dict[str, Any]:
 
 
 def should_retry(state: AutoTopoState) -> str:
-    """条件边函数：判断是否需要重试。"""
+    """条件边函数：判断预览重试、最终精修或接受结果。"""
     evaluation = state.get("evaluation", {})
     iteration = state.get("iteration", 0)
-    max_retries = state.get("max_retries", 3)
+    max_retries = state.get("max_retries", 2)
+    solve_stage = state.get("solve_stage", "preview")
+    solve_profile = state.get("solve_profile", "preview_refine")
+    final_refine_done = state.get("final_refine_done", solve_profile != "preview_refine")
 
-    if not evaluation.get("has_defects", False):
+    if solve_stage == "final" or solve_profile == "final_only":
         return "accept"
 
+    def finish_preview() -> str:
+        if solve_profile == "preview_refine" and not final_refine_done:
+            return "final"
+        return "accept"
+
+    if not evaluation.get("has_defects", False):
+        return finish_preview()
+
+    if evaluation.get("severity") == "minor":
+        return finish_preview()
+
     if iteration >= max_retries:
-        return "accept"  # 超过最大重试次数，接受当前结果
+        return finish_preview()  # 超过预览重试次数后进入最终精修或接受结果
 
     return "retry"
+
+
+def prepare_final_refine(state: AutoTopoState) -> dict[str, Any]:
+    """切换到最终精修阶段；最终阶段只求解一次，不再进入反馈长循环。"""
+    return {
+        "solve_stage": "final",
+        "final_refine_done": True,
+    }
 
 
 def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
@@ -151,6 +174,7 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
     改进逻辑：
     - penal：惩罚因子原则上只增不减，防止灰色单元增多
     - rmin：Helmholtz 过滤半径依据缺陷双向更新
+    - volfrac：体积分数是用户问题约束，反馈闭环严禁修改
     - 步进限幅：防止参数调整过猛导致收敛震荡
     """
     evaluation = state.get("evaluation", {})
@@ -161,7 +185,6 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
     BOUNDS = {
         "penal": (1.0, 10.0),
         "rmin": (0.01, 0.2),        # Helmholtz 过滤半径比例
-        "volfrac": (0.1, 0.9),
     }
     SUPPORTED_PARAMS = set(BOUNDS)
 
@@ -195,9 +218,6 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
                 target = suggested
                 max_step = current * 0.5
                 target = min(max(target, current - max_step), current + max_step)
-        elif param_name == "volfrac":
-            target = suggested
-
         lo, hi = BOUNDS.get(param_name, (float("-inf"), float("inf")))
         current_params[param_name] = round(min(max(target, lo), hi), 4)
 

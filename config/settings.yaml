@@ -80,6 +80,22 @@ llm:
 # ─── 仿真引擎 ───
 engine:
   backend: "dolfin_adjoint"
+  # 求解模式：AI 反馈闭环先用 preview 快速预览，最终验收再用 final 精修
+  profiles:
+    preview:
+      mesh_resolution: 2.0
+      max_iter: 60
+      tol: 1.0e-4
+      output_dpi: 120
+    final:
+      max_iter: 200
+      tol: 1.0e-6
+      output_dpi: 300
+  early_stop:
+    enabled: true
+    min_iter: 20
+    window: 8
+    rel_delta: 1.0e-3
   # 默认优化参数
   default_params:
     mesh_resolution: 1.0     # Gmsh 特征网格尺寸
@@ -92,7 +108,7 @@ engine:
 
 # ─── 视觉评估反馈 ───
 evaluation:
-  max_retries: 10        # 最大重试次数
+  max_retries: 2         # 预览阶段最大反馈重试次数
   defect_thresholds:
     gray_ratio: 0.1     # 灰度单元占比阈值
     checkerboard_score: 0.3

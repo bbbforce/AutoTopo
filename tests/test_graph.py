@@ -44,8 +44,8 @@ class TestGraphStructure:
         graph = build_graph()
         compiled = graph.compile()
         nodes = list(compiled.get_graph().nodes.keys())
-        # __start__, __end__ + 8 个业务节点
-        assert len(nodes) == 10
+        # __start__, __end__ + 9 个业务节点
+        assert len(nodes) == 11
 
     def test_expected_nodes(self):
         graph = build_graph()
@@ -56,7 +56,7 @@ class TestGraphStructure:
             "parse_input", "route_problem",
             "theory_derivation", "code_generation",
             "run_simulation", "evaluate_result",
-            "apply_fixes", "save_output",
+            "apply_fixes", "prepare_final_refine", "save_output",
         }
         assert nodes == expected
 
@@ -125,6 +125,9 @@ class TestEndToEndMock:
             "user_input": "悬臂梁测试",
             "image_paths": [],
             "max_retries": 3,
+            "solve_profile": "preview_refine",
+            "solve_stage": "preview",
+            "final_refine_done": False,
             "output_path": str(tmp_path),
             "iteration": 0,
             "history": [],
@@ -181,12 +184,16 @@ class TestEndToEndMock:
             "user_input": "悬臂梁测试",
             "image_paths": [],
             "max_retries": 3,
+            "solve_profile": "preview_refine",
+            "solve_stage": "preview",
+            "final_refine_done": False,
             "output_path": str(tmp_path),
             "iteration": 0,
             "history": [],
         })
 
-        # 第二次评估应通过
+        # 最终精修评估应通过
         assert result["evaluation"]["has_defects"] is False
-        # 应经过至少2次迭代
-        assert result["iteration"] >= 2
+        assert result["solve_stage"] == "final"
+        # 应经过预览失败、预览通过、最终精修通过
+        assert result["iteration"] >= 3

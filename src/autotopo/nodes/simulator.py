@@ -34,6 +34,12 @@ def _get_engine() -> TopoEngine:
         raise ValueError(f"不支持的引擎后端: {backend}")
 
 
+def _profile_for_stage(config: dict[str, Any], stage: str) -> dict[str, Any]:
+    """读取求解阶段对应的 profile 配置。"""
+    profiles = config.get("engine", {}).get("profiles", {})
+    return dict(profiles.get(stage, {}))
+
+
 def _volume_constraint_value(problem: dict[str, Any]) -> float | None:
     """从问题约束中读取体积分数。"""
     for constraint in problem.get("constraints", []):
@@ -64,7 +70,7 @@ def _merge_parameters(
     defaults: dict[str, Any],
     current_params: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """按反馈参数 > 体积分数约束 > 问题参数 > 配置默认值合并求解参数。"""
+    """合并求解参数，但体积分数约束始终以问题定义为准。"""
     params = dict(defaults)
     params.update(problem.get("parameters", {}))
 
@@ -73,9 +79,37 @@ def _merge_parameters(
         params["volfrac"] = constraint_volfrac
 
     if current_params:
-        params.update(current_params)
+        feedback_params = dict(current_params)
+        feedback_params.pop("volfrac", None)
+        params.update(feedback_params)
+
+    if constraint_volfrac is not None:
+        params["volfrac"] = constraint_volfrac
 
     return params
+
+
+def _apply_runtime_profile(
+    problem: dict[str, Any],
+    params: dict[str, Any],
+    profile: dict[str, Any],
+    *,
+    stage: str,
+) -> dict[str, Any]:
+    """把 profile 应用到本轮运行副本，避免修改原始问题定义。"""
+    runtime_params = dict(params)
+
+    domain = dict(problem.get("domain", {}))
+    if "mesh_resolution" in profile and stage == "preview":
+        domain["mesh_resolution"] = profile["mesh_resolution"]
+        problem["domain"] = domain
+
+    for key in ["max_iter", "tol", "output_dpi"]:
+        if key in profile:
+            runtime_params[key] = profile[key]
+
+    runtime_params["solve_stage"] = stage
+    return runtime_params
 
 
 def run_simulation(state: AutoTopoState) -> dict[str, Any]:
@@ -83,11 +117,21 @@ def run_simulation(state: AutoTopoState) -> dict[str, Any]:
     config = _load_config()
     output_cfg = config.get("output", {})
     engine_defaults = config.get("engine", {}).get("default_params", {})
+    stage = state.get("solve_stage", "preview")
+    profile = _profile_for_stage(config, stage)
 
     problem = deepcopy(state["problem_definition"])
     params = _merge_parameters(problem, engine_defaults, state.get("current_params"))
+    params = _apply_runtime_profile(problem, params, profile, stage=stage)
     problem["parameters"] = params
     _sync_volume_constraint(problem, params.get("volfrac", 0.5))
+    early_stop_cfg = config.get("engine", {}).get("early_stop", {})
+    if early_stop_cfg:
+        problem["early_stop"] = dict(early_stop_cfg)
+    problem["solve_stage"] = stage
+
+    output_dir = Path(state.get("output_path", output_cfg.get("dir", "./output")))
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # 每轮从均匀密度场重新开始优化
     engine = _get_engine()
@@ -103,11 +147,9 @@ def run_simulation(state: AutoTopoState) -> dict[str, Any]:
     )
 
     # 导出结果图
-    output_dir = Path(state.get("output_path", output_cfg.get("dir", "./output")))
-    output_dir.mkdir(parents=True, exist_ok=True)
     iteration = state.get("iteration", 0)
     img_path = str(output_dir / f"result_iter_{iteration}.{output_cfg.get('image_format', 'png')}")
-    engine.export_image(img_path, dpi=output_cfg.get("dpi", 300))
+    engine.export_image(img_path, dpi=params.get("output_dpi", output_cfg.get("dpi", 300)))
 
     # 导出当前轮收敛历史图
     convergence_img_path = str(output_dir / f"convergence_iter_{iteration}.png")
@@ -131,6 +173,10 @@ def run_simulation(state: AutoTopoState) -> dict[str, Any]:
             "iterations": result.iterations,
             "converged": result.converged,
             "mesh_info": result.mesh_info,
+            "timings": result.extra.get("timings", {}),
+            "solve_stage": result.extra.get("solve_stage", stage),
+            "early_stopped": result.extra.get("early_stopped", False),
         },
         "current_params": params,
+        "solve_stage": stage,
     }

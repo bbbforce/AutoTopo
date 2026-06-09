@@ -24,6 +24,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import traceback
 import types
 
@@ -62,7 +63,22 @@ def patch_function_riesz(func):
 #  网格生成
 # ════════════════════════════════════════════════════════════════
 
-def generate_mesh(width, height, mesh_resolution, non_design_regions=None):
+def generate_rectangle_mesh(width, height, mesh_resolution):
+    """使用 DOLFIN 原生矩形网格，避免简单矩形问题的 Gmsh/meshio 往返。"""
+    nx = max(1, int(round(width / (mesh_resolution * 2.0))))
+    ny = max(1, int(round(height / (mesh_resolution * 2.0))))
+    try:
+        mesh = da.RectangleMesh(dolfin.Point(0.0, 0.0), dolfin.Point(width, height), nx, ny)
+    except AttributeError:
+        mesh = dolfin.RectangleMesh(dolfin.Point(0.0, 0.0), dolfin.Point(width, height), nx, ny)
+    print(
+        f"  矩形网格快速生成完成: {mesh.num_vertices()} 节点, "
+        f"{mesh.num_cells()} 单元 (nx={nx}, ny={ny})"
+    )
+    return mesh
+
+
+def generate_gmsh_mesh(width, height, mesh_resolution, non_design_regions=None):
     """使用 Gmsh 生成 2D 三角形网格并转为 DOLFIN Mesh。"""
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 0)
@@ -132,6 +148,16 @@ def generate_mesh(width, height, mesh_resolution, non_design_regions=None):
     return mesh
 
 
+def generate_mesh(width, height, mesh_resolution, non_design_regions=None):
+    """生成网格：简单矩形走原生快速路径，复杂几何回退 Gmsh。"""
+    if not non_design_regions:
+        try:
+            return generate_rectangle_mesh(width, height, mesh_resolution)
+        except Exception as exc:
+            print(f"  矩形网格快速路径失败，回退 Gmsh: {exc}")
+    return generate_gmsh_mesh(width, height, mesh_resolution, non_design_regions)
+
+
 # ════════════════════════════════════════════════════════════════
 #  边界子域
 # ════════════════════════════════════════════════════════════════
@@ -191,6 +217,25 @@ def make_boundary(location, W, H, tol):
     return None
 
 
+def is_point_location(location):
+    """判断位置描述是否是角点/单点约束。"""
+    loc = location.lower().replace(" ", "_")
+    return (
+        "corner" in loc
+        or "bottom_left" in loc
+        or "bottom_right" in loc
+        or "top_left" in loc
+        or "top_right" in loc
+    )
+
+
+def make_dirichlet_bc(space, value, subdomain, location):
+    """创建边界条件，角点约束使用 FEniCS pointwise 模式。"""
+    if is_point_location(location):
+        return da.DirichletBC(space, value, subdomain, "pointwise")
+    return da.DirichletBC(space, value, subdomain)
+
+
 def location_to_point(location, W, H):
     """将位置描述转换为坐标 (x, y)。"""
     loc = location.lower().replace(" ", "_")
@@ -218,6 +263,8 @@ def location_to_point(location, W, H):
 
 def solve_topology_optimization(problem, output_dir):
     """执行 SIMP 拓扑优化 (FEniCS + dolfin-adjoint)。"""
+    total_start = time.perf_counter()
+    timings = {}
 
     # ── 解析参数 ──
     domain = problem.get("domain", {})
@@ -245,6 +292,22 @@ def solve_topology_optimization(problem, output_dir):
     if optimizer.upper() == "L-BFGS-B":
         print("  L-BFGS-B 不支持体积约束，自动切换为 SLSQP")
         optimizer = "SLSQP"
+    output_dpi = int(params.get("output_dpi", 300))
+    solve_stage = params.get("solve_stage", problem.get("solve_stage", "unknown"))
+
+    early_stop_cfg = {
+        "enabled": True,
+        "min_iter": 20,
+        "window": 8,
+        "rel_delta": 1e-3,
+    }
+    early_stop_cfg.update(problem.get("early_stop", {}) or {})
+    if isinstance(params.get("early_stop"), dict):
+        early_stop_cfg.update(params["early_stop"])
+    early_stop_enabled = bool(early_stop_cfg.get("enabled", True))
+    early_stop_min_iter = int(early_stop_cfg.get("min_iter", 20))
+    early_stop_window = int(early_stop_cfg.get("window", 8))
+    early_stop_rel_delta = float(early_stop_cfg.get("rel_delta", 1e-3))
 
     volfrac = params.get("volfrac", 0.5)
     for c in problem.get("constraints", []):
@@ -255,7 +318,10 @@ def solve_topology_optimization(problem, output_dir):
     R = rmin * max(width, height)
 
     # ── 生成网格 ──
+    mesh_start = time.perf_counter()
     mesh = generate_mesh(width, height, mesh_resolution, non_design_regions)
+    timings["mesh"] = time.perf_counter() - mesh_start
+    setup_start = time.perf_counter()
 
     # ── 边界条件 ──
     V = dolfin.VectorFunctionSpace(mesh, "CG", 1)
@@ -272,23 +338,23 @@ def solve_topology_optimization(problem, output_dir):
             continue
 
         if bc_type == "fixed":
-            bcs.append(da.DirichletBC(V, da.Constant((0.0, 0.0)), subdomain))
+            bcs.append(make_dirichlet_bc(V, da.Constant((0.0, 0.0)), subdomain, location))
         elif bc_type == "fixed_x":
-            bcs.append(da.DirichletBC(V.sub(0), da.Constant(0.0), subdomain))
+            bcs.append(make_dirichlet_bc(V.sub(0), da.Constant(0.0), subdomain, location))
         elif bc_type == "fixed_y":
-            bcs.append(da.DirichletBC(V.sub(1), da.Constant(0.0), subdomain))
+            bcs.append(make_dirichlet_bc(V.sub(1), da.Constant(0.0), subdomain, location))
         elif bc_type in ("symmetry", "roller"):
             if "left" in location.lower() or "right" in location.lower():
-                bcs.append(da.DirichletBC(V.sub(0), da.Constant(0.0), subdomain))
+                bcs.append(make_dirichlet_bc(V.sub(0), da.Constant(0.0), subdomain, location))
             else:
-                bcs.append(da.DirichletBC(V.sub(1), da.Constant(0.0), subdomain))
+                bcs.append(make_dirichlet_bc(V.sub(1), da.Constant(0.0), subdomain, location))
 
     # 默认 BC: half-MBB
     if not bcs:
         left = make_boundary("left_edge", W_dim, H_dim, bc_tol)
-        bcs.append(da.DirichletBC(V.sub(0), da.Constant(0.0), left))
+        bcs.append(make_dirichlet_bc(V.sub(0), da.Constant(0.0), left, "left_edge"))
         br = make_boundary("bottom_right", W_dim, H_dim, bc_tol)
-        bcs.append(da.DirichletBC(V.sub(1), da.Constant(0.0), br))
+        bcs.append(make_dirichlet_bc(V.sub(1), da.Constant(0.0), br, "bottom_right"))
 
     # ── 载荷 ──
     loads = []
@@ -404,6 +470,10 @@ def solve_topology_optimization(problem, output_dir):
     volume_history = []
     iter_count = [0]
     latest_density_values = [rho.vector().get_local().copy()]
+    early_stop_state = {"triggered": False, "reason": ""}
+
+    class EarlyStop(RuntimeError):
+        pass
 
     def eval_cb(j, rho_vals):
         iter_count[0] += 1
@@ -419,13 +489,32 @@ def solve_topology_optimization(problem, output_dir):
         if iter_count[0] % 10 == 0 or iter_count[0] == 1:
             print(f"  it.: {iter_count[0]:4d}, obj.: {j:.4f}, vol.: {vol_frac:.4f}")
 
+        if (
+            early_stop_enabled
+            and iter_count[0] >= early_stop_min_iter
+            and early_stop_window > 1
+            and len(compliance_history) >= early_stop_window
+        ):
+            recent = compliance_history[-early_stop_window:]
+            scale = max(abs(recent[0]), 1e-12)
+            rel_delta = abs(recent[0] - recent[-1]) / scale
+            if rel_delta < early_stop_rel_delta:
+                early_stop_state["triggered"] = True
+                early_stop_state["reason"] = (
+                    f"最近 {early_stop_window} 次目标函数相对变化 "
+                    f"{rel_delta:.3e} < {early_stop_rel_delta:.3e}"
+                )
+                raise EarlyStop(early_stop_state["reason"])
+
     # 简化泛函
     control = da.Control(rho, riesz_map="L2")
     Jhat = da.ReducedFunctional(J, control, eval_cb_post=eval_cb)
+    timings["setup"] = time.perf_counter() - setup_start
 
     # 优化
     print(f"\n  开始优化: optimizer={optimizer}, max_iter={max_iter}")
     converged = True
+    opt_start = time.perf_counter()
     try:
         rho_opt = da.minimize(
             Jhat,
@@ -434,6 +523,11 @@ def solve_topology_optimization(problem, output_dir):
             constraints=VolumeConstraint(volfrac, float(total_volume)),
             options={"maxiter": max_iter, "ftol": tol, "disp": True},
         )
+    except EarlyStop as exc:
+        converged = True
+        print(f"  触发早停，导出当前可用设计: {exc}")
+        rho_opt = da.Function(W_space, name="DensityEarlyStop")
+        rho_opt.vector()[:] = latest_density_values[0]
     except Exception as exc:
         if "Iteration limit reached" not in str(exc):
             raise
@@ -442,10 +536,13 @@ def solve_topology_optimization(problem, output_dir):
         print(f"  优化达到迭代上限，导出当前可用设计: {exc}")
         rho_opt = da.Function(W_space, name="DensityIterationLimit")
         rho_opt.vector()[:] = latest_density_values[0]
+    finally:
+        timings["optimization"] = time.perf_counter() - opt_start
 
     # ══════════════════════════════════════════════════════════
     #  输出结果
     # ══════════════════════════════════════════════════════════
+    export_start = time.perf_counter()
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -474,7 +571,7 @@ def solve_topology_optimization(problem, output_dir):
     ax.set_ylabel("y")
     ax.set_aspect("equal")
     plt.tight_layout()
-    fig.savefig(os.path.join(output_dir, "density.png"), dpi=300, bbox_inches="tight")
+    fig.savefig(os.path.join(output_dir, "density.png"), dpi=output_dpi, bbox_inches="tight")
     plt.close(fig)
 
     # 绘制收敛历史图
@@ -496,13 +593,20 @@ def solve_topology_optimization(problem, output_dir):
 
         fig.suptitle("Convergence History", fontsize=14, fontweight="bold")
         plt.tight_layout()
-        fig.savefig(os.path.join(output_dir, "convergence.png"), dpi=300, bbox_inches="tight")
+        fig.savefig(os.path.join(output_dir, "convergence.png"), dpi=output_dpi, bbox_inches="tight")
         plt.close(fig)
+
+    timings["export"] = time.perf_counter() - export_start
+    timings["total"] = time.perf_counter() - total_start
 
     # 结果 JSON
     result = {
+        "solve_stage": solve_stage,
         "iterations": iter_count[0],
         "converged": converged,
+        "early_stopped": early_stop_state["triggered"],
+        "early_stop_reason": early_stop_state["reason"],
+        "timings": timings,
         "compliance_history": compliance_history,
         "volume_history": volume_history,
         "mesh_info": {

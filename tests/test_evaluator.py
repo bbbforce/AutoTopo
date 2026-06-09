@@ -7,14 +7,51 @@ class TestShouldRetry:
 
     def test_no_defects_accept(self):
         state = {"evaluation": {"has_defects": False}, "iteration": 0, "max_retries": 3}
-        assert should_retry(state) == "accept"
+        assert should_retry(state) == "final"
 
     def test_has_defects_retry(self):
         state = {"evaluation": {"has_defects": True}, "iteration": 1, "max_retries": 3}
         assert should_retry(state) == "retry"
 
+    def test_minor_defect_enters_final_refine(self):
+        state = {
+            "evaluation": {"has_defects": True, "severity": "minor"},
+            "iteration": 1,
+            "max_retries": 3,
+            "solve_stage": "preview",
+            "solve_profile": "preview_refine",
+            "final_refine_done": False,
+        }
+        assert should_retry(state) == "final"
+
+    def test_final_stage_accepts_without_retry(self):
+        state = {
+            "evaluation": {"has_defects": True, "severity": "severe"},
+            "iteration": 1,
+            "max_retries": 3,
+            "solve_stage": "final",
+            "solve_profile": "preview_refine",
+        }
+        assert should_retry(state) == "accept"
+
     def test_max_retries_exceeded(self):
-        state = {"evaluation": {"has_defects": True}, "iteration": 3, "max_retries": 3}
+        state = {
+            "evaluation": {"has_defects": True, "severity": "moderate"},
+            "iteration": 3,
+            "max_retries": 3,
+            "solve_profile": "preview_refine",
+            "final_refine_done": False,
+        }
+        assert should_retry(state) == "final"
+
+    def test_preview_only_max_retries_accepts(self):
+        state = {
+            "evaluation": {"has_defects": True, "severity": "moderate"},
+            "iteration": 2,
+            "max_retries": 2,
+            "solve_profile": "preview_only",
+            "final_refine_done": True,
+        }
         assert should_retry(state) == "accept"
 
     def test_custom_max_retries(self):
@@ -22,15 +59,12 @@ class TestShouldRetry:
         assert should_retry(state) == "retry"
 
         state["iteration"] = 5
-        assert should_retry(state) == "accept"
+        assert should_retry(state) == "final"
 
     def test_default_max_retries(self):
-        """未设置 max_retries 时默认 3。"""
+        """未设置 max_retries 时默认 2。"""
         state = {"evaluation": {"has_defects": True}, "iteration": 2}
-        assert should_retry(state) == "retry"
-
-        state["iteration"] = 3
-        assert should_retry(state) == "accept"
+        assert should_retry(state) == "final"
 
 
 class TestApplyFixes:
@@ -119,8 +153,8 @@ class TestApplyFixes:
         result = apply_fixes(state)
         assert result["current_params"]["penal"] == 10.0
 
-    def test_safety_bounds_volfrac(self):
-        """体积分数应被限制在 [0.1, 0.9]。"""
+    def test_volfrac_fix_ignored(self):
+        """体积分数是用户问题约束，反馈修正不得修改。"""
         state = {
             "evaluation": {
                 "suggested_fixes": [
@@ -131,7 +165,7 @@ class TestApplyFixes:
             "current_params": {"volfrac": 0.5},
         }
         result = apply_fixes(state)
-        assert result["current_params"]["volfrac"] == 0.1
+        assert result["current_params"]["volfrac"] == 0.5
 
     def test_multiple_fixes(self):
         """同时调整 penal 和 rmin，均在步进范围内。"""
