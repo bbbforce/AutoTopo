@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -98,7 +99,7 @@ def _run_engine(args: argparse.Namespace) -> None:
                        "magnitude": 1.0, "direction": [0, -1]}],
             "constraints": [{"type": "volume_fraction", "value": args.volfrac}],
             "parameters": {"penal": args.penal, "rmin": args.rmin,
-                           "max_iter": args.max_iter, "optimizer": "L-BFGS-B"},
+                           "max_iter": args.max_iter, "tol": 1e-6, "optimizer": "SLSQP"},
         },
         "mbb": {
             "domain": {"width": 60.0, "height": 20.0, "mesh_resolution": args.mesh_res},
@@ -111,7 +112,7 @@ def _run_engine(args: argparse.Namespace) -> None:
                        "magnitude": 1.0, "direction": [0, -1]}],
             "constraints": [{"type": "volume_fraction", "value": args.volfrac}],
             "parameters": {"penal": args.penal, "rmin": args.rmin,
-                           "max_iter": args.max_iter, "optimizer": "L-BFGS-B"},
+                           "max_iter": args.max_iter, "tol": 1e-6, "optimizer": "SLSQP"},
         },
         "bridge": {
             "domain": {"width": 60.0, "height": 20.0, "mesh_resolution": args.mesh_res},
@@ -124,7 +125,7 @@ def _run_engine(args: argparse.Namespace) -> None:
                        "magnitude": 1.0, "direction": [0, -1]}],
             "constraints": [{"type": "volume_fraction", "value": args.volfrac}],
             "parameters": {"penal": args.penal, "rmin": args.rmin,
-                           "max_iter": args.max_iter, "optimizer": "L-BFGS-B"},
+                           "max_iter": args.max_iter, "tol": 1e-6, "optimizer": "SLSQP"},
         },
     }
 
@@ -140,7 +141,26 @@ def _run_engine(args: argparse.Namespace) -> None:
     output_dir = Path(args.output) / f"solve_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(parents=True, exist_ok=True)
     img_path = str(output_dir / f"{args.preset}_result.png")
+    convergence_path = str(output_dir / f"{args.preset}_convergence.png")
+    result_json_path = output_dir / "result.json"
     engine.export_image(img_path)
+    engine.get_convergence_image(convergence_path)
+
+    result_payload = {
+        "iterations": result.iterations,
+        "converged": result.converged,
+        "compliance_history": result.compliance_history,
+        "volume_history": result.volume_history,
+        "mesh_info": result.mesh_info,
+        "files": {
+            "density_image": Path(img_path).name,
+            "convergence_image": Path(convergence_path).name,
+        },
+    }
+    result_json_path.write_text(
+        json.dumps(result_payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     print(f"\n✅ 优化完成!")
     print(f"   迭代次数: {result.iterations}")
@@ -148,6 +168,8 @@ def _run_engine(args: argparse.Namespace) -> None:
     if result.compliance_history:
         print(f"   最终柔度: {result.compliance_history[-1]:.4f}")
     print(f"   结果图: {img_path}")
+    print(f"   收敛图: {convergence_path}")
+    print(f"   结果 JSON: {result_json_path}")
 
 
 if __name__ == "__main__":

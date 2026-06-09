@@ -4,7 +4,33 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from autotopo.engines.base import OptResult
 from autotopo.graph import build_graph, compile_graph
+
+
+class FakeEngine:
+    def setup(self, problem):
+        self.problem = problem
+
+    def optimize(self, *, max_iter=200, tol=1e-6, penal=None, rmin=None, volfrac=None):
+        return OptResult(
+            densities=np.full((2, 3), volfrac if volfrac is not None else 0.5),
+            compliance_history=[10.0, 5.0],
+            volume_history=[volfrac if volfrac is not None else 0.5] * 2,
+            iterations=2,
+            converged=True,
+            mesh_info={"num_cells": 6},
+        )
+
+    def export_image(self, path, dpi=300):
+        from pathlib import Path
+        Path(path).write_bytes(b"fake density")
+        return path
+
+    def get_convergence_image(self, path):
+        from pathlib import Path
+        Path(path).write_bytes(b"fake convergence")
+        return path
 
 
 class TestGraphStructure:
@@ -41,7 +67,7 @@ class TestEndToEndMock:
     def _mock_problem_dict(self):
         return {
             "description": "悬臂梁",
-            "domain": {"width": 60, "height": 20, "nelx": 30, "nely": 10,
+            "domain": {"width": 60, "height": 20, "mesh_resolution": 1.0,
                         "non_design_regions": []},
             "material": {"youngs_modulus": 1.0, "poissons_ratio": 0.3},
             "boundary_conditions": [
@@ -55,7 +81,13 @@ class TestEndToEndMock:
             "constraints": [
                 {"type": "volume_fraction", "value": 0.5, "description": None},
             ],
-            "parameters": {"penal": 3.0, "rmin": 1.5, "max_iter": 20, "tol": 0.01},
+            "parameters": {
+                "penal": 3.0,
+                "rmin": 0.05,
+                "max_iter": 20,
+                "tol": 1e-6,
+                "optimizer": "SLSQP",
+            },
         }
 
     def _mock_eval_pass(self):
@@ -69,10 +101,9 @@ class TestEndToEndMock:
 
     @patch("autotopo.nodes.input_parser.get_llm")
     @patch("autotopo.nodes.evaluator.get_llm")
-    def test_standard_path_e2e(self, mock_eval_llm, mock_parser_llm, tmp_path):
+    @patch("autotopo.nodes.simulator._get_engine", return_value=FakeEngine())
+    def test_standard_path_e2e(self, mock_get_engine, mock_eval_llm, mock_parser_llm, tmp_path):
         """标准路径端到端：解析 → 路由(标准) → 仿真 → 评估(通过) → 保存。"""
-        import yaml
-
         problem_dict = self._mock_problem_dict()
 
         # Mock 解析 LLM
@@ -106,7 +137,8 @@ class TestEndToEndMock:
 
     @patch("autotopo.nodes.input_parser.get_llm")
     @patch("autotopo.nodes.evaluator.get_llm")
-    def test_retry_loop(self, mock_eval_llm, mock_parser_llm, tmp_path):
+    @patch("autotopo.nodes.simulator._get_engine", return_value=FakeEngine())
+    def test_retry_loop(self, mock_get_engine, mock_eval_llm, mock_parser_llm, tmp_path):
         """测试反馈闭环：第一次评估有缺陷 → 修正 → 第二次通过。"""
         problem_dict = self._mock_problem_dict()
 

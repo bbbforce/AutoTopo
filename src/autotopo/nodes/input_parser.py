@@ -82,7 +82,7 @@ PARSER_SYSTEM_PROMPT = """\
     "rmin": 0.05,
     "max_iter": 200,
     "tol": 1e-6,
-    "optimizer": "L-BFGS-B"
+    "optimizer": "SLSQP"
   }
 }
 ```

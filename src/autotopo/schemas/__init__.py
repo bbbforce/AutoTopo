@@ -66,6 +66,15 @@ class Severity(str, Enum):
 # ──────────────────────────── 问题定义 ────────────────────────────
 
 
+class NonDesignRegion(BaseModel):
+    """非设计域区域"""
+    x_min: float
+    y_min: float
+    x_max: float
+    y_max: float
+    density: float = Field(default=1.0, description="固定密度值 (0=空洞, 1=实体)")
+
+
 class DomainSpec(BaseModel):
     """设计域规格"""
     width: float = Field(description="设计域宽度")
@@ -78,15 +87,6 @@ class DomainSpec(BaseModel):
         default_factory=list,
         description="非设计域区域列表（从图片中识别）",
     )
-
-
-class NonDesignRegion(BaseModel):
-    """非设计域区域"""
-    x_min: float
-    y_min: float
-    x_max: float
-    y_max: float
-    density: float = Field(default=1.0, description="固定密度值 (0=空洞, 1=实体)")
 
 
 class MaterialSpec(BaseModel):
@@ -129,8 +129,8 @@ class OptParams(BaseModel):
     max_iter: int = Field(default=200, description="最大优化迭代数")
     tol: float = Field(default=1e-6, description="优化收敛容差")
     optimizer: str = Field(
-        default="L-BFGS-B",
-        description="优化器名称 (L-BFGS-B / SLSQP 等)",
+        default="SLSQP",
+        description="优化器名称。当前标准后端默认使用 SLSQP 以支持体积约束",
     )
 
 
@@ -172,6 +172,3 @@ class EvaluationResult(BaseModel):
     )
     reasoning: str = Field(description="评估推理过程")
 
-
-# 解决前向引用
-DomainSpec.model_rebuild()

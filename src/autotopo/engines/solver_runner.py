@@ -25,6 +25,7 @@ import os
 import sys
 import tempfile
 import traceback
+import types
 
 import numpy as np
 
@@ -37,6 +38,24 @@ import meshio
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+
+def patch_function_riesz(func):
+    """Add the missing Riesz conversion hook for this container's Function type."""
+
+    def _ad_convert_riesz(self, gradient, riesz_map=None):
+        if riesz_map not in (None, "L2", "l2"):
+            raise ValueError(f"Unsupported Riesz map for density control: {riesz_map}")
+
+        out = dolfin.Function(self.function_space())
+        if hasattr(gradient, "vector"):
+            out.vector()[:] = gradient.vector()
+        else:
+            out.vector()[:] = np.asarray(gradient, dtype=float)
+        return out
+
+    func._ad_convert_riesz = types.MethodType(_ad_convert_riesz, func)
+    return func
 
 
 # ════════════════════════════════════════════════════════════════
@@ -106,7 +125,9 @@ def generate_mesh(width, height, mesh_resolution, non_design_regions=None):
     )
     meshio.write(xml_path, mesh_for_dolfin, file_format="dolfin-xml")
 
-    mesh = dolfin.Mesh(xml_path)
+    # 使用 dolfin-adjoint 重载的网格，确保带注释的求解操作可安全地
+    # 在 pyadjoint 记录链中登记网格依赖关系
+    mesh = da.Mesh(xml_path)
     print(f"  网格生成完成: {mesh.num_vertices()} 节点, {mesh.num_cells()} 单元")
     return mesh
 
@@ -220,9 +241,12 @@ def solve_topology_optimization(problem, output_dir):
     rmin = params.get("rmin", 0.05)
     max_iter = params.get("max_iter", 200)
     tol = params.get("tol", 1e-6)
-    optimizer = params.get("optimizer", "L-BFGS-B")
+    optimizer = params.get("optimizer", "SLSQP")
+    if optimizer.upper() == "L-BFGS-B":
+        print("  L-BFGS-B 不支持体积约束，自动切换为 SLSQP")
+        optimizer = "SLSQP"
 
-    volfrac = 0.5
+    volfrac = params.get("volfrac", 0.5)
     for c in problem.get("constraints", []):
         if c.get("type") == "volume_fraction":
             volfrac = c.get("value", 0.5)
@@ -248,23 +272,23 @@ def solve_topology_optimization(problem, output_dir):
             continue
 
         if bc_type == "fixed":
-            bcs.append(dolfin.DirichletBC(V, dolfin.Constant((0.0, 0.0)), subdomain))
+            bcs.append(da.DirichletBC(V, da.Constant((0.0, 0.0)), subdomain))
         elif bc_type == "fixed_x":
-            bcs.append(dolfin.DirichletBC(V.sub(0), dolfin.Constant(0.0), subdomain))
+            bcs.append(da.DirichletBC(V.sub(0), da.Constant(0.0), subdomain))
         elif bc_type == "fixed_y":
-            bcs.append(dolfin.DirichletBC(V.sub(1), dolfin.Constant(0.0), subdomain))
+            bcs.append(da.DirichletBC(V.sub(1), da.Constant(0.0), subdomain))
         elif bc_type in ("symmetry", "roller"):
             if "left" in location.lower() or "right" in location.lower():
-                bcs.append(dolfin.DirichletBC(V.sub(0), dolfin.Constant(0.0), subdomain))
+                bcs.append(da.DirichletBC(V.sub(0), da.Constant(0.0), subdomain))
             else:
-                bcs.append(dolfin.DirichletBC(V.sub(1), dolfin.Constant(0.0), subdomain))
+                bcs.append(da.DirichletBC(V.sub(1), da.Constant(0.0), subdomain))
 
     # 默认 BC: half-MBB
     if not bcs:
         left = make_boundary("left_edge", W_dim, H_dim, bc_tol)
-        bcs.append(dolfin.DirichletBC(V.sub(0), dolfin.Constant(0.0), left))
+        bcs.append(da.DirichletBC(V.sub(0), da.Constant(0.0), left))
         br = make_boundary("bottom_right", W_dim, H_dim, bc_tol)
-        bcs.append(dolfin.DirichletBC(V.sub(1), dolfin.Constant(0.0), br))
+        bcs.append(da.DirichletBC(V.sub(1), da.Constant(0.0), br))
 
     # ── 载荷 ──
     loads = []
@@ -293,7 +317,7 @@ def solve_topology_optimization(problem, output_dir):
     W_space = dolfin.FunctionSpace(mesh, "CG", 1)   # 密度
 
     # 设计变量
-    rho = da.Function(W_space, name="Density")
+    rho = patch_function_riesz(da.Function(W_space, name="Density"))
     rho.vector()[:] = volfrac
 
     # Helmholtz 过滤
@@ -327,16 +351,16 @@ def solve_topology_optimization(problem, output_dir):
     a = dolfin.inner(sigma(u), epsilon(v)) * dolfin.dx
 
     # 载荷形式 (Gaussian 近似点力)
-    L_form = dolfin.dot(dolfin.Constant((0.0, 0.0)), v) * dolfin.dx
+    L_form = dolfin.dot(da.Constant((0.0, 0.0)), v) * dolfin.dx
     for load in loads:
         px, py = load["point"]
         fx, fy = load["force"]
         sig = mesh_resolution * 1.5
-        gauss = dolfin.Expression(
+        gauss = da.Expression(
             "exp(-((x[0]-px)*(x[0]-px) + (x[1]-py)*(x[1]-py)) / (2*s*s)) / (2*pi*s*s)",
             px=px, py=py, s=sig, pi=np.pi, degree=2,
         )
-        f_vec = dolfin.as_vector([dolfin.Constant(fx), dolfin.Constant(fy)])
+        f_vec = dolfin.as_vector([da.Constant(fx), da.Constant(fy)])
         L_form = L_form + gauss * dolfin.dot(f_vec, v) * dolfin.dx
 
     u_sol = da.Function(V, name="Displacement")
@@ -346,24 +370,28 @@ def solve_topology_optimization(problem, output_dir):
     J = da.assemble(dolfin.inner(sigma(u_sol), epsilon(u_sol)) * dolfin.dx)
 
     # 体积约束
-    total_volume = da.assemble(dolfin.Constant(1.0) * dolfin.dx(mesh))
+    total_volume = da.assemble(da.Constant(1.0) * dolfin.dx(mesh))
 
     class VolumeConstraint(da.InequalityConstraint):
         def __init__(self, vf, vol):
             self.vf = float(vf)
             self.vol = float(vol)
-            self.smass = da.assemble(
-                dolfin.TestFunction(W_space) * dolfin.Constant(1.0) * dolfin.dx
-            )
-            self.tmpvec = da.Function(W_space)
+
+        @staticmethod
+        def _values(m):
+            if isinstance(m, (list, tuple)):
+                m = m[0]
+            if hasattr(m, "vector"):
+                return m.vector().get_local()
+            return np.asarray(m, dtype=float)
 
         def function(self, m):
-            return [self.vf - float(da.assemble(m * dolfin.dx)) / self.vol]
+            values = self._values(m)
+            return [self.vf - float(np.mean(values))]
 
         def jacobian(self, m):
-            out = self.tmpvec.vector().copy()
-            out[:] = -self.smass.get_local() / self.vol
-            return [out]
+            values = self._values(m)
+            return [-np.ones_like(values, dtype=float) / values.size]
 
         def output_workspace(self):
             return [0.0]
@@ -371,33 +399,49 @@ def solve_topology_optimization(problem, output_dir):
         def length(self):
             return 1
 
-    # ReducedFunctional
-    control = da.Control(rho)
-    Jhat = da.ReducedFunctional(J, control)
-
     # 收敛历史
     compliance_history = []
     volume_history = []
     iter_count = [0]
+    latest_density_values = [rho.vector().get_local().copy()]
 
     def eval_cb(j, rho_vals):
         iter_count[0] += 1
         compliance_history.append(float(j))
-        vol_frac = float(rho_vals.vector().sum()) / len(rho_vals.vector())
+        rho_func = rho_vals[0] if isinstance(rho_vals, (list, tuple)) else rho_vals
+        if hasattr(rho_func, "vector"):
+            values = rho_func.vector().get_local()
+        else:
+            values = np.asarray(rho_func, dtype=float)
+        latest_density_values[0] = values.copy()
+        vol_frac = float(np.mean(values))
         volume_history.append(vol_frac)
         if iter_count[0] % 10 == 0 or iter_count[0] == 1:
             print(f"  it.: {iter_count[0]:4d}, obj.: {j:.4f}, vol.: {vol_frac:.4f}")
 
+    # 简化泛函
+    control = da.Control(rho, riesz_map="L2")
+    Jhat = da.ReducedFunctional(J, control, eval_cb_post=eval_cb)
+
     # 优化
     print(f"\n  开始优化: optimizer={optimizer}, max_iter={max_iter}")
-    rho_opt = da.minimize(
-        Jhat,
-        method=optimizer,
-        bounds=(0.0, 1.0),
-        constraints=VolumeConstraint(volfrac, float(total_volume)),
-        options={"maxiter": max_iter, "ftol": tol, "disp": True},
-        callback=eval_cb,
-    )
+    converged = True
+    try:
+        rho_opt = da.minimize(
+            Jhat,
+            method=optimizer,
+            bounds=(0.0, 1.0),
+            constraints=VolumeConstraint(volfrac, float(total_volume)),
+            options={"maxiter": max_iter, "ftol": tol, "disp": True},
+        )
+    except Exception as exc:
+        if "Iteration limit reached" not in str(exc):
+            raise
+
+        converged = False
+        print(f"  优化达到迭代上限，导出当前可用设计: {exc}")
+        rho_opt = da.Function(W_space, name="DensityIterationLimit")
+        rho_opt.vector()[:] = latest_density_values[0]
 
     # ══════════════════════════════════════════════════════════
     #  输出结果
@@ -458,7 +502,7 @@ def solve_topology_optimization(problem, output_dir):
     # 结果 JSON
     result = {
         "iterations": iter_count[0],
-        "converged": True,
+        "converged": converged,
         "compliance_history": compliance_history,
         "volume_history": volume_history,
         "mesh_info": {

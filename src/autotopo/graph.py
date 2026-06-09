@@ -79,7 +79,7 @@ def _generate_report(state: AutoTopoState, output_dir: Path) -> None:
         f"| 体积分数 | {params.get('volfrac', '?')} |",
         f"| 罚因子 | {params.get('penal', '?')} |",
         f"| Helmholtz 过滤半径 | {params.get('rmin', '?')} |",
-        f"| 优化器 | {params.get('optimizer', 'L-BFGS-B')} |",
+        f"| 优化器 | {params.get('optimizer', 'SLSQP')} |",
         "",
         f"## 求解结果\n",
         f"- 迭代次数: {solve_result.get('iterations', '?')}",

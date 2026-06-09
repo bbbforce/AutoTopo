@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +34,23 @@ CONTAINER_WORK_DIR = "/tmp/autotopo"
 
 # solver_runner.py 在宿主机上的路径
 _SOLVER_RUNNER_PATH = Path(__file__).parent / "solver_runner.py"
+
+
+def _sync_volume_constraint(problem: dict[str, Any], volfrac: float) -> None:
+    """Keep the JSON contract consistent for solver_runner.py."""
+    constraints = list(problem.get("constraints", []))
+    for constraint in constraints:
+        if constraint.get("type") == "volume_fraction":
+            constraint["value"] = volfrac
+            problem["constraints"] = constraints
+            return
+
+    constraints.append({
+        "type": "volume_fraction",
+        "value": volfrac,
+        "description": "体积分数约束",
+    })
+    problem["constraints"] = constraints
 
 
 class DolfinAdjointEngine(TopoEngine):
@@ -54,13 +72,13 @@ class DolfinAdjointEngine(TopoEngine):
 
     def setup(self, problem: dict[str, Any]) -> None:
         """存储问题定义 (实际计算在 optimize 时发送给容器)。"""
-        self._problem = dict(problem)
+        self._problem = deepcopy(problem)
 
-        # 从约束中提取 volfrac 到 parameters 中
+        # 从约束中提取 volfrac 到 parameters 中；约束是求解器读取的最终来源。
         params = dict(problem.get("parameters", {}))
         for c in problem.get("constraints", []):
             if c.get("type") == "volume_fraction":
-                params.setdefault("volfrac", c.get("value", 0.5))
+                params["volfrac"] = c.get("value", params.get("volfrac", 0.5))
         self._problem["parameters"] = params
 
         # 向后兼容：nelx/nely → mesh_resolution
@@ -94,8 +112,10 @@ class DolfinAdjointEngine(TopoEngine):
         params["max_iter"] = max_iter
         params["tol"] = tol
 
-        problem = dict(self._problem)
+        problem = deepcopy(self._problem)
         problem["parameters"] = params
+        if "volfrac" in params:
+            _sync_volume_constraint(problem, params["volfrac"])
 
         # 创建本地临时目录
         local_tmp = tempfile.mkdtemp(prefix="autotopo_run_")

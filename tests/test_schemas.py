@@ -29,7 +29,7 @@ class TestOptimizationProblem:
     def _make_problem(self, **overrides) -> OptimizationProblem:
         defaults = {
             "description": "悬臂梁拓扑优化",
-            "domain": DomainSpec(width=60, height=20, nelx=60, nely=20),
+            "domain": DomainSpec(width=60, height=20, mesh_resolution=1.0),
             "material": MaterialSpec(youngs_modulus=1.0, poissons_ratio=0.3),
             "boundary_conditions": [
                 BoundaryCondition(type=BCType.FIXED, location="left_edge"),
@@ -42,7 +42,7 @@ class TestOptimizationProblem:
             "constraints": [
                 ConstraintSpec(type=ConstraintType.VOLUME_FRACTION, value=0.5),
             ],
-            "parameters": OptParams(penal=3.0, rmin=1.5),
+            "parameters": OptParams(penal=3.0, rmin=0.05),
         }
         defaults.update(overrides)
         return OptimizationProblem(**defaults)
@@ -50,7 +50,7 @@ class TestOptimizationProblem:
     def test_basic_creation(self):
         problem = self._make_problem()
         assert problem.description == "悬臂梁拓扑优化"
-        assert problem.domain.nelx == 60
+        assert problem.domain.mesh_resolution == 1.0
         assert problem.material.youngs_modulus == 1.0
         assert len(problem.boundary_conditions) == 1
         assert len(problem.loads) == 1
@@ -66,7 +66,7 @@ class TestOptimizationProblem:
         problem = self._make_problem()
         j = problem.model_dump_json()
         parsed = json.loads(j)
-        assert parsed["domain"]["nelx"] == 60
+        assert parsed["domain"]["mesh_resolution"] == 1.0
 
     def test_serialize_to_yaml(self):
         problem = self._make_problem()
@@ -79,7 +79,8 @@ class TestOptimizationProblem:
         problem = self._make_problem()
         assert problem.parameters.penal == 3.0
         assert problem.parameters.max_iter == 200
-        assert problem.parameters.tol == 0.01
+        assert problem.parameters.tol == 1e-6
+        assert problem.parameters.optimizer == "SLSQP"
 
     def test_multiple_constraints(self):
         problem = self._make_problem(constraints=[
@@ -117,8 +118,8 @@ class TestEvaluationResult:
                     suggested_value=4.0, reason="增大罚因子减少灰度单元",
                 ),
                 ParameterAdjustment(
-                    parameter="rmin", current_value=1.5,
-                    suggested_value=2.5, reason="增大过滤半径消除棋盘格",
+                    parameter="rmin", current_value=0.05,
+                    suggested_value=0.075, reason="增大过滤半径消除棋盘格",
                 ),
             ],
             reasoning="存在明显灰度区域和棋盘格图案。",

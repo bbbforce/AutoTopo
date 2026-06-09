@@ -48,7 +48,7 @@ class TopoEngine(ABC):
         self,
         *,
         max_iter: int = 200,
-        tol: float = 0.01,
+        tol: float = 1e-6,
         penal: Optional[float] = None,
         rmin: Optional[float] = None,
         volfrac: Optional[float] = None,

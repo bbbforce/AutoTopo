@@ -10,5 +10,5 @@
   "constraints": [
     {"type": "volume_fraction", "value": 0.5}
   ],
-  "parameters": {"penal": 3.0, "rmin": 0.05, "max_iter": 20, "tol": 1e-6, "optimizer": "L-BFGS-B"}
+  "parameters": {"penal": 3.0, "rmin": 0.05, "max_iter": 20, "tol": 1e-6, "optimizer": "SLSQP"}
 }

@@ -44,7 +44,7 @@ class TestApplyFixes:
                      "suggested_value": 4.0, "reason": "test"},
                 ],
             },
-            "current_params": {"penal": 3.0, "rmin": 1.5},
+            "current_params": {"penal": 3.0, "rmin": 0.05},
         }
         result = apply_fixes(state)
         assert result["current_params"]["penal"] == 4.0
@@ -78,32 +78,32 @@ class TestApplyFixes:
         assert result["current_params"]["penal"] == 5.0
 
     def test_apply_rmin_increase(self):
-        """rmin 建议值在步进范围内（+50%=2.25），直接采纳。"""
+        """rmin 建议值在步进范围内（+50%=0.075），直接采纳。"""
         state = {
             "evaluation": {
                 "suggested_fixes": [
-                    {"parameter": "rmin", "current_value": 1.5,
-                     "suggested_value": 2.0, "reason": "test"},
+                    {"parameter": "rmin", "current_value": 0.05,
+                     "suggested_value": 0.07, "reason": "test"},
                 ],
             },
-            "current_params": {"penal": 3.0, "rmin": 1.5},
+            "current_params": {"penal": 3.0, "rmin": 0.05},
         }
         result = apply_fixes(state)
-        assert result["current_params"]["rmin"] == 2.0
+        assert result["current_params"]["rmin"] == 0.07
 
     def test_rmin_step_clamp(self):
-        """rmin 跳跃过大（1.5→4.0），应被限幅为 1.5+0.75=2.25。"""
+        """rmin 跳跃过大（0.05→0.2），应被限幅为 0.05+0.025=0.075。"""
         state = {
             "evaluation": {
                 "suggested_fixes": [
-                    {"parameter": "rmin", "current_value": 1.5,
-                     "suggested_value": 4.0, "reason": "test"},
+                    {"parameter": "rmin", "current_value": 0.05,
+                     "suggested_value": 0.2, "reason": "test"},
                 ],
             },
-            "current_params": {"rmin": 1.5},
+            "current_params": {"rmin": 0.05},
         }
         result = apply_fixes(state)
-        assert result["current_params"]["rmin"] == 2.25
+        assert result["current_params"]["rmin"] == 0.075
 
     def test_safety_bounds_penal(self):
         """penal 上限 10.0：当前8.0 + 50% = 12，应限制为 10.0。"""
@@ -140,15 +140,15 @@ class TestApplyFixes:
                 "suggested_fixes": [
                     {"parameter": "penal", "current_value": 3.0,
                      "suggested_value": 4.0, "reason": ""},
-                    {"parameter": "rmin", "current_value": 1.5,
-                     "suggested_value": 2.0, "reason": ""},
+                    {"parameter": "rmin", "current_value": 0.05,
+                     "suggested_value": 0.07, "reason": ""},
                 ],
             },
-            "current_params": {"penal": 3.0, "rmin": 1.5},
+            "current_params": {"penal": 3.0, "rmin": 0.05},
         }
         result = apply_fixes(state)
         assert result["current_params"]["penal"] == 4.0
-        assert result["current_params"]["rmin"] == 2.0
+        assert result["current_params"]["rmin"] == 0.07
 
     def test_no_fixes(self):
         state = {
@@ -158,8 +158,8 @@ class TestApplyFixes:
         result = apply_fixes(state)
         assert result["current_params"]["penal"] == 3.0
 
-    def test_apply_ft_fix(self):
-        """ft 建议值（浮点数）应被转为整型采纳。"""
+    def test_unsupported_parameter_ignored(self):
+        """旧 JAX 参数 ft 不属于当前 FEniCS 主链，应被忽略。"""
         state = {
             "evaluation": {
                 "suggested_fixes": [
@@ -170,5 +170,4 @@ class TestApplyFixes:
             "current_params": {"ft": 1},
         }
         result = apply_fixes(state)
-        assert result["current_params"]["ft"] == 2
-        assert isinstance(result["current_params"]["ft"], int)
+        assert result["current_params"]["ft"] == 1

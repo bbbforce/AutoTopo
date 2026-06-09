@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -33,18 +34,60 @@ def _get_engine() -> TopoEngine:
         raise ValueError(f"不支持的引擎后端: {backend}")
 
 
+def _volume_constraint_value(problem: dict[str, Any]) -> float | None:
+    """从问题约束中读取体积分数。"""
+    for constraint in problem.get("constraints", []):
+        if constraint.get("type") == "volume_fraction":
+            return constraint.get("value")
+    return None
+
+
+def _sync_volume_constraint(problem: dict[str, Any], volfrac: float) -> None:
+    """将 parameters.volfrac 同步回体积分数约束，供容器求解器读取。"""
+    constraints = list(problem.get("constraints", []))
+    for constraint in constraints:
+        if constraint.get("type") == "volume_fraction":
+            constraint["value"] = volfrac
+            problem["constraints"] = constraints
+            return
+
+    constraints.append({
+        "type": "volume_fraction",
+        "value": volfrac,
+        "description": "体积分数约束",
+    })
+    problem["constraints"] = constraints
+
+
+def _merge_parameters(
+    problem: dict[str, Any],
+    defaults: dict[str, Any],
+    current_params: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """按反馈参数 > 体积分数约束 > 问题参数 > 配置默认值合并求解参数。"""
+    params = dict(defaults)
+    params.update(problem.get("parameters", {}))
+
+    constraint_volfrac = _volume_constraint_value(problem)
+    if constraint_volfrac is not None:
+        params["volfrac"] = constraint_volfrac
+
+    if current_params:
+        params.update(current_params)
+
+    return params
+
+
 def run_simulation(state: AutoTopoState) -> dict[str, Any]:
     """仿真节点：初始化引擎 → 执行优化 → 导出结果图。"""
     config = _load_config()
     output_cfg = config.get("output", {})
     engine_defaults = config.get("engine", {}).get("default_params", {})
 
-    # 合并参数：问题定义 > 反馈修正 > 配置默认
-    problem = state["problem_definition"]
-    params = {**engine_defaults}
-    params.update(problem.get("parameters", {}))
-    if state.get("current_params"):
-        params.update(state["current_params"])
+    problem = deepcopy(state["problem_definition"])
+    params = _merge_parameters(problem, engine_defaults, state.get("current_params"))
+    problem["parameters"] = params
+    _sync_volume_constraint(problem, params.get("volfrac", 0.5))
 
     # 每轮从均匀密度场重新开始优化
     engine = _get_engine()

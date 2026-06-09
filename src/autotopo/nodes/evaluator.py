@@ -23,7 +23,7 @@ EVALUATOR_SYSTEM_PROMPT = """\
 1. **拓扑优化密度分布结果图**（第一张）：深色部分为实体，白色部分为孔洞
 2. **收敛历史曲线图**（第二张）：包含柔度（Compliance）和体积分数（Volume Fraction）随迭代步的变化
 
-本项目使用 FEniCS + dolfin-adjoint 引擎，采用 SIMP 方法 + Helmholtz PDE 过滤 + L-BFGS-B 优化器。
+本项目使用 FEniCS + dolfin-adjoint 引擎，采用 SIMP 方法 + Helmholtz PDE 过滤 + SLSQP 优化器。
 
 请综合分析两张图片，识别以下常见缺陷并以 JSON 格式给出修正建议：
 
@@ -96,7 +96,7 @@ def evaluate_result(state: AutoTopoState) -> dict[str, Any]:
             f"当前参数：penal={current_params.get('penal', 3.0)}, "
             f"rmin={current_params.get('rmin', 0.05)} (Helmholtz 过滤半径比例), "
             f"volfrac={current_params.get('volfrac', 0.5)}\n"
-            f"引擎: FEniCS + dolfin-adjoint, 优化器: {current_params.get('optimizer', 'L-BFGS-B')}\n"
+            f"引擎: FEniCS + dolfin-adjoint, 优化器: {current_params.get('optimizer', 'SLSQP')}\n"
             f"第一张图是拓扑优化密度分布结果，第二张图是收敛历史曲线。\n"
             f"请综合两张图评估结果质量。"
         )},
@@ -163,9 +163,13 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
         "rmin": (0.01, 0.2),        # Helmholtz 过滤半径比例
         "volfrac": (0.1, 0.9),
     }
+    SUPPORTED_PARAMS = set(BOUNDS)
 
     for fix in evaluation.get("suggested_fixes", []):
         param_name = fix["parameter"]
+        if param_name not in SUPPORTED_PARAMS:
+            continue
+
         suggested = fix["suggested_value"]
         current = current_params.get(param_name, suggested)
 
@@ -193,9 +197,6 @@ def apply_fixes(state: AutoTopoState) -> dict[str, Any]:
                 target = min(max(target, current - max_step), current + max_step)
         elif param_name == "volfrac":
             target = suggested
-        else:
-            current_params[param_name] = suggested
-            continue
 
         lo, hi = BOUNDS.get(param_name, (float("-inf"), float("inf")))
         current_params[param_name] = round(min(max(target, lo), hi), 4)

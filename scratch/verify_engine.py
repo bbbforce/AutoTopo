@@ -29,7 +29,7 @@ problem = {
     "constraints": [
         {"type": "volume_fraction", "value": 0.5},
     ],
-    "parameters": {"penal": 3.0, "rmin": 0.05, "optimizer": "L-BFGS-B"},
+    "parameters": {"penal": 3.0, "rmin": 0.05, "optimizer": "SLSQP"},
 }
 
 engine = DolfinAdjointEngine()

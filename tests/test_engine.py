@@ -1,142 +1,105 @@
-"""SIMP 仿真引擎测试。"""
+"""FEniCS + dolfin-adjoint Docker proxy tests."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import numpy as np
-import pytest
 
-from autotopo.engines.jax_fem_engine import JaxFemEngine
+from autotopo.engines.dolfin_adjoint_engine import DolfinAdjointEngine
 
 
-def _cantilever_problem(nelx=30, nely=10, volfrac=0.5, max_iter=50):
+def _cantilever_problem(volfrac=0.4):
     return {
-        "domain": {"nelx": nelx, "nely": nely},
+        "domain": {"width": 60.0, "height": 20.0, "mesh_resolution": 1.0},
         "material": {"youngs_modulus": 1.0, "poissons_ratio": 0.3},
         "boundary_conditions": [{"type": "fixed", "location": "left_edge"}],
         "loads": [{"type": "point_force", "location": "right_center",
                    "magnitude": 1.0, "direction": [0, -1]}],
         "constraints": [{"type": "volume_fraction", "value": volfrac}],
-        "parameters": {"penal": 3.0, "rmin": 1.5, "max_iter": max_iter},
+        "parameters": {"penal": 3.0, "rmin": 0.05, "max_iter": 20, "optimizer": "SLSQP"},
     }
 
 
-class TestJaxFemEngine:
+class FakeDolfinAdjointEngine(DolfinAdjointEngine):
+    def __init__(self):
+        super().__init__(container="fake-dolfin")
+        self.sent_problem = None
 
-    def test_setup(self):
-        engine = JaxFemEngine()
-        engine.setup(_cantilever_problem())
-        assert engine.nelx == 30
-        assert engine.nely == 10
-        assert engine.densities is not None
-        assert engine.densities.shape == (30 * 10,)  # 1D 数组，列优先编号
+    def _deploy_solver(self) -> None:
+        return None
 
-    def test_optimize_runs(self):
-        engine = JaxFemEngine()
-        engine.setup(_cantilever_problem(max_iter=20))
-        result = engine.optimize(max_iter=20)
+    def _docker_exec(self, cmd: str, *, capture: bool = False):
+        if capture:
+            return 0, "fake solve complete", ""
+        return 0, "", ""
 
-        assert result.iterations == 20
-        assert len(result.compliance_history) == 20
-        assert len(result.volume_history) == 20
-        assert result.densities.shape == (10, 30)
+    def _docker_cp_to(self, local_path: str, container_path: str) -> None:
+        if local_path.endswith("problem.json"):
+            self.sent_problem = json.loads(Path(local_path).read_text())
 
-    def test_compliance_decreases(self):
-        """柔度应大体单调递减。"""
-        engine = JaxFemEngine()
-        engine.setup(_cantilever_problem(max_iter=30))
-        result = engine.optimize(max_iter=30)
+    def _docker_cp_from(self, container_path: str, local_path: str) -> None:
+        path = Path(local_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 前5次 vs 后5次的均值
-        early = np.mean(result.compliance_history[:5])
-        late = np.mean(result.compliance_history[-5:])
-        assert late < early, "优化应使柔度降低"
+        if path.name == "result.json":
+            path.write_text(json.dumps({
+                "iterations": 3,
+                "converged": True,
+                "compliance_history": [10.0, 7.0, 5.0],
+                "volume_history": [0.4, 0.4, 0.4],
+                "mesh_info": {"num_cells": 12, "num_vertices": 9},
+            }))
+        elif path.name == "density_grid.npy":
+            np.save(path, np.full((2, 3), 0.4))
+        else:
+            path.write_bytes(b"fake image")
 
-    def test_volume_fraction_respected(self):
-        """最终体积分数应接近目标值。"""
-        volfrac = 0.4
-        engine = JaxFemEngine()
-        engine.setup(_cantilever_problem(volfrac=volfrac, max_iter=50))
-        result = engine.optimize(max_iter=50, volfrac=volfrac)
 
-        actual_vol = float(np.mean(result.densities))
-        assert abs(actual_vol - volfrac) < 0.05, f"体积分数 {actual_vol:.3f} 偏离目标 {volfrac}"
+class TestDolfinAdjointEngine:
+    def test_setup_syncs_constraint_volfrac_into_params(self):
+        problem = _cantilever_problem(volfrac=0.35)
+        problem["parameters"]["volfrac"] = 0.8
 
-    def test_density_bounds(self):
-        """密度值应在 [0, 1] 范围内。"""
-        engine = JaxFemEngine()
-        engine.setup(_cantilever_problem(max_iter=30))
-        result = engine.optimize(max_iter=30)
-
-        assert np.all(result.densities >= 0)
-        assert np.all(result.densities <= 1.001)
-
-    def test_different_penal(self):
-        """不同罚因子应产生不同结果。"""
-        engine1 = JaxFemEngine()
-        engine1.setup(_cantilever_problem(max_iter=30))
-        r1 = engine1.optimize(max_iter=30, penal=2.0)
-
-        engine2 = JaxFemEngine()
-        engine2.setup(_cantilever_problem(max_iter=30))
-        r2 = engine2.optimize(max_iter=30, penal=5.0)
-
-        # 高罚因子应产生更接近 0-1 的密度分布
-        gray1 = np.sum((r1.densities > 0.1) & (r1.densities < 0.9))
-        gray2 = np.sum((r2.densities > 0.1) & (r2.densities < 0.9))
-        assert gray2 <= gray1, "更高罚因子应减少灰度单元"
-
-    def test_export_image(self, tmp_path):
-        engine = JaxFemEngine()
-        engine.setup(_cantilever_problem(max_iter=10))
-        engine.optimize(max_iter=10)
-
-        img_path = str(tmp_path / "test_result.png")
-        returned_path = engine.export_image(img_path)
-        assert returned_path == img_path
-        assert (tmp_path / "test_result.png").exists()
-
-    def test_mbb_beam(self):
-        """MBB 梁问题应正常求解。"""
-        problem = {
-            "domain": {"nelx": 30, "nely": 10},
-            "material": {"youngs_modulus": 1.0, "poissons_ratio": 0.3},
-            "boundary_conditions": [
-                {"type": "fixed_x", "location": "left_edge"},
-                {"type": "fixed_y", "location": "bottom_right"},
-            ],
-            "loads": [{"type": "point_force", "location": "top_left",
-                       "magnitude": 1.0, "direction": [0, -1]}],
-            "constraints": [{"type": "volume_fraction", "value": 0.5}],
-            "parameters": {"penal": 3.0, "rmin": 1.5},
-        }
-
-        engine = JaxFemEngine()
+        engine = FakeDolfinAdjointEngine()
         engine.setup(problem)
-        result = engine.optimize(max_iter=30)
 
-        assert result.iterations == 30
-        assert result.densities.shape == (10, 30)
+        assert engine._problem["parameters"]["volfrac"] == 0.35
 
-    def test_heaviside_projection(self):
-        """启用 Heaviside 投影(ft=2)应显著减少灰度单元。"""
-        # ft=1 基线
-        engine1 = JaxFemEngine()
-        engine1.setup(_cantilever_problem(max_iter=50))
-        r1 = engine1.optimize(max_iter=50, ft=1)
+    def test_setup_converts_legacy_nelx_to_mesh_resolution(self):
+        problem = _cantilever_problem()
+        problem["domain"] = {"width": 60.0, "height": 20.0, "nelx": 30, "nely": 10}
 
-        # ft=2 Heaviside
-        engine2 = JaxFemEngine()
-        engine2.setup(_cantilever_problem(max_iter=50))
-        r2 = engine2.optimize(max_iter=50, ft=2)
+        engine = FakeDolfinAdjointEngine()
+        engine.setup(problem)
 
-        # 灰度单元比例：密度值在 (0.1, 0.9) 之间的单元
-        gray1 = np.sum((r1.densities > 0.1) & (r1.densities < 0.9))
-        gray2 = np.sum((r2.densities > 0.1) & (r2.densities < 0.9))
-        assert gray2 <= gray1, f"Heaviside 应减少灰度单元: ft=1有{gray1}个, ft=2有{gray2}个"
+        assert engine._problem["domain"]["mesh_resolution"] == 2.0
 
-    def test_heaviside_density_bounds(self):
-        """启用 Heaviside 后密度值仍应在 [0, 1] 范围内。"""
-        engine = JaxFemEngine()
-        engine.setup(_cantilever_problem(max_iter=30))
-        result = engine.optimize(max_iter=30, ft=2)
+    def test_optimize_sends_synced_problem_and_loads_result(self):
+        engine = FakeDolfinAdjointEngine()
+        engine.setup(_cantilever_problem(volfrac=0.4))
 
-        assert np.all(result.densities >= -0.01), f"最小密度: {result.densities.min()}"
-        assert np.all(result.densities <= 1.01), f"最大密度: {result.densities.max()}"
+        result = engine.optimize(max_iter=7, penal=4.0, rmin=0.08, volfrac=0.3)
+
+        assert engine.sent_problem["parameters"]["max_iter"] == 7
+        assert engine.sent_problem["parameters"]["penal"] == 4.0
+        assert engine.sent_problem["parameters"]["rmin"] == 0.08
+        assert engine.sent_problem["parameters"]["volfrac"] == 0.3
+        assert engine.sent_problem["constraints"][0]["value"] == 0.3
+        assert result.iterations == 3
+        assert result.densities.shape == (2, 3)
+        assert result.compliance_history[-1] == 5.0
+
+    def test_export_images_after_optimize(self, tmp_path):
+        engine = FakeDolfinAdjointEngine()
+        engine.setup(_cantilever_problem())
+        engine.optimize(max_iter=3)
+
+        density_path = tmp_path / "density.png"
+        convergence_path = tmp_path / "convergence.png"
+
+        assert engine.export_image(str(density_path)) == str(density_path)
+        assert engine.get_convergence_image(str(convergence_path)) == str(convergence_path)
+        assert density_path.read_bytes() == b"fake image"
+        assert convergence_path.read_bytes() == b"fake image"

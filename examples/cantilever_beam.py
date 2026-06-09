@@ -25,7 +25,7 @@ problem = {
     "constraints": [
         {"type": "volume_fraction", "value": 0.4},
     ],
-    "parameters": {"penal": 3.0, "rmin": 0.05, "optimizer": "L-BFGS-B"},
+    "parameters": {"penal": 3.0, "rmin": 0.05, "optimizer": "SLSQP"},
 }
 
 if __name__ == "__main__":

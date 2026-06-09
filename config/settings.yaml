@@ -88,7 +88,7 @@ engine:
     rmin: 0.05               # Helmholtz 过滤半径（相对域尺寸的比例）
     max_iter: 200            # 最大优化迭代数
     tol: 1.0e-6              # 优化收敛容差
-    optimizer: "L-BFGS-B"    # scipy 优化器
+    optimizer: "SLSQP"       # scipy 优化器（支持体积约束）
 
 # ─── 视觉评估反馈 ───
 evaluation:
