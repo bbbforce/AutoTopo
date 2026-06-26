@@ -96,6 +96,9 @@ def run_minimal_benchmark(
     quick: bool = False,
     use_llm_agents: bool = False,
     llm_provider: str | None = None,
+    agent_authority: str = "deterministic",
+    allow_generated_code: bool = False,
+    generated_code_timeout_s: int = 60,
 ) -> list[BenchmarkCaseResult]:
     """运行 6 case × 3 method 的最小实验。"""
 
@@ -118,6 +121,9 @@ def run_minimal_benchmark(
                 max_repair_rounds=3,
                 use_llm_agents=use_llm_agents,
                 llm_provider=llm_provider,
+                agent_authority=agent_authority,
+                allow_generated_code=allow_generated_code,
+                generated_code_timeout_s=generated_code_timeout_s,
             )
             results.append(result)
     write_summary(results, root)
@@ -130,6 +136,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output", default=str(DEFAULT_BENCHMARK_OUTPUT), help="输出目录")
     parser.add_argument("--llm-agents", action="store_true", help="启用 Scientist/Planner/Reviewer LLM 路径")
     parser.add_argument("--provider", default=None, help="LLM provider；为空时使用 config/settings.yaml 默认值")
+    parser.add_argument(
+        "--agent-authority",
+        choices=["deterministic", "llm_assisted", "llm_primary"],
+        default="deterministic",
+        help="agent 自治级别；llm_primary 才允许 LLM 放行本地判断",
+    )
+    parser.add_argument("--allow-generated-code", action="store_true", help="允许 Coder 生成脚本并由 Executor 自动执行")
+    parser.add_argument("--generated-code-timeout", type=int, default=60, help="生成脚本子进程超时时间（秒）")
     args = parser.parse_args(argv)
 
     results = run_minimal_benchmark(
@@ -137,6 +151,9 @@ def main(argv: list[str] | None = None) -> None:
         quick=args.quick,
         use_llm_agents=args.llm_agents,
         llm_provider=args.provider,
+        agent_authority=args.agent_authority,
+        allow_generated_code=args.allow_generated_code,
+        generated_code_timeout_s=args.generated_code_timeout,
     )
     final_success = sum(1 for item in results if item.final_success)
     print(f"minimal benchmark complete: {len(results)} runs, final_success={final_success}")

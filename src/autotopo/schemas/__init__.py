@@ -77,6 +77,13 @@ class BenchmarkMethod(str, Enum):
     OURS_CORRECTIVE_RAG = "ours_corrective_rag"
 
 
+class AgentAuthority(str, Enum):
+    """研究 workflow 中 LLM agent 的自治级别"""
+    DETERMINISTIC = "deterministic"
+    LLM_ASSISTED = "llm_assisted"
+    LLM_PRIMARY = "llm_primary"
+
+
 class FailureMode(str, Enum):
     """研究 workflow 的统一失败模式枚举"""
     PYTHON_EXCEPTION = "python_exception"
@@ -283,14 +290,30 @@ class QueryContext(BaseModel):
     failure_modes: List[str] = Field(default_factory=list)
 
 
+class AgentDecision(BaseModel):
+    """LLM agent 对本地判断的结构化裁决。"""
+    case_id: str = ""
+    target_agent: str = ""
+    decision: str = "hold"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reasons: List[str] = Field(default_factory=list)
+    evidence_ids: List[str] = Field(default_factory=list)
+    overridden_failure_modes: List[FailureMode] = Field(default_factory=list)
+    action: str = ""
+
+
 class ValidationReport(BaseModel):
     """Validator 的 fail-closed 检查报告。"""
     case_id: str
     is_valid: bool
+    local_is_valid: Optional[bool] = None
     failure_modes: List[FailureMode] = Field(default_factory=list)
     severity: Severity = Severity.MINOR
     messages: List[str] = Field(default_factory=list)
     normalized_problem: Dict[str, Any] = Field(default_factory=dict)
+    evidence_ids: List[str] = Field(default_factory=list)
+    llm_decision: Optional[AgentDecision] = None
+    overridden_failure_modes: List[FailureMode] = Field(default_factory=list)
 
 
 class CodePlan(BaseModel):
@@ -301,9 +324,13 @@ class CodePlan(BaseModel):
     template_id: str
     optimizer: str = "MMA"
     allow_generated_code: bool = False
+    execution_mode: str = "template"
+    generated_code_path: str = ""
+    generated_code_manifest_path: str = ""
     steps: List[str] = Field(default_factory=list)
     evidence_ids: List[str] = Field(default_factory=list)
     parameters: Dict[str, Any] = Field(default_factory=dict)
+    generation_decision: Optional[AgentDecision] = None
 
 
 class ExecutionReport(BaseModel):
@@ -364,6 +391,7 @@ class EvaluatorReport(BaseModel):
     case_id: str
     success: bool
     has_quality_failure: bool = False
+    local_has_quality_failure: Optional[bool] = None
     failure_modes: List[FailureMode] = Field(default_factory=list)
     compliance: Optional[float] = None
     volume_error: Optional[float] = None
@@ -375,6 +403,9 @@ class EvaluatorReport(BaseModel):
     converged: bool = False
     messages: List[str] = Field(default_factory=list)
     repair_plan: Optional[RepairPlan] = None
+    evidence_ids: List[str] = Field(default_factory=list)
+    llm_decision: Optional[AgentDecision] = None
+    overridden_failure_modes: List[FailureMode] = Field(default_factory=list)
 
 
 class BenchmarkCaseResult(BaseModel):

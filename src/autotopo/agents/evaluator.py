@@ -4,14 +4,41 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+from langchain_core.messages import HumanMessage, SystemMessage
 
+from autotopo.agents.llm_utils import (
+    AgentTrace,
+    decision_allows_override,
+    decision_trace_payload,
+    enrich_latest_trace,
+    try_invoke_structured,
+)
 from autotopo.diagnostics.repair_rules import build_repair_plan
 from autotopo.diagnostics.topology_metrics import checkerboard_score, connectivity_score, grayness_index, volume_error
 from autotopo.rag.corrective_rag import retrieve_for_quality_failure
 from autotopo.rag.retriever import LocalRetriever
-from autotopo.schemas import CaseSpec, EvaluatorReport, ExecutionReport, FailureMode, RepairPlan, RetrievedEvidence
+from autotopo.schemas import AgentDecision, CaseSpec, EvaluatorReport, ExecutionReport, FailureMode, RepairPlan, RetrievedEvidence
+
+
+EVALUATOR_SYSTEM_PROMPT = """\
+你是 AutoTopo research_graph 的 Evaluator agent。
+
+你会看到本地拓扑质量指标、ExecutionReport、CaseSpec 和 RAG 证据。你的职责是判断
+本地质量告警是否可能是保守阈值导致的误判。只有证据充分时，才返回 pass/allow/approve。
+"""
+
+
+OVERRIDABLE_QUALITY_MODES = {
+    FailureMode.NON_CONVERGENCE,
+    FailureMode.VOLUME_CONSTRAINT_VIOLATION,
+    FailureMode.GRAYNESS_TOO_HIGH,
+    FailureMode.CHECKERBOARD,
+    FailureMode.DISCONNECTED_ISLANDS,
+    FailureMode.TOO_THIN_MEMBERS,
+}
 
 
 def _passive_mask(case_spec: CaseSpec) -> np.ndarray | None:
@@ -28,8 +55,14 @@ def evaluate_execution(
     repair_iteration: int = 0,
     max_repair_rounds: int = 3,
     retriever: LocalRetriever | None = None,
+    use_llm: bool = False,
+    allow_llm_override: bool = False,
+    llm_provider: str | None = None,
+    llm: Any = None,
+    llm_overrides: dict[str, Any] | None = None,
+    trace: AgentTrace | None = None,
 ) -> tuple[EvaluatorReport, RepairPlan | None, list[RetrievedEvidence]]:
-    """计算拓扑指标并在失败时给出修复计划。"""
+    """计算拓扑指标；高自治模式可由 LLM 覆盖质量告警。"""
 
     evidence: list[RetrievedEvidence] = []
     failure_modes: list[FailureMode] = []
@@ -80,6 +113,7 @@ def evaluate_execution(
             case_id=case_spec.case_id,
             success=not quality_failures,
             has_quality_failure=bool(quality_failures),
+            local_has_quality_failure=bool(quality_failures),
             failure_modes=failure_modes,
             compliance=compliance,
             volume_error=vol_err,
@@ -95,12 +129,72 @@ def evaluate_execution(
     repair_plan = None
     if report.has_quality_failure:
         evidence = retrieve_for_quality_failure(report, retriever, case_spec)
+        evidence_ids = [item.evidence_id for item in evidence]
+        report = report.model_copy(update={"evidence_ids": evidence_ids})
+        if use_llm and allow_llm_override:
+            messages_for_llm = [
+                SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
+                HumanMessage(
+                    content=(
+                        "请判断本地拓扑质量告警是否可以高置信放行。\n"
+                        f"可放行 failure_modes: {[mode.value for mode in OVERRIDABLE_QUALITY_MODES]}\n"
+                        f"case_spec: {case_spec.model_dump(mode='json')}\n"
+                        f"execution_report: {execution_report.model_dump(mode='json')}\n"
+                        f"local_evaluator_report: {report.model_dump(mode='json')}\n"
+                        f"retrieved_evidence: {[item.model_dump(mode='json') for item in evidence]}\n"
+                        "若放行，请把被覆盖的 failure_modes 写入 overridden_failure_modes。"
+                    )
+                ),
+            ]
+            decision = try_invoke_structured(
+                agent="evaluator",
+                messages=messages_for_llm,
+                output_model=AgentDecision,
+                provider=llm_provider,
+                llm=llm,
+                use_llm=use_llm,
+                llm_overrides=llm_overrides,
+                trace=trace,
+            )
+            if isinstance(decision, AgentDecision):
+                decision = decision.model_copy(
+                    update={
+                        "case_id": case_spec.case_id,
+                        "target_agent": "evaluator",
+                        "evidence_ids": [item for item in decision.evidence_ids if item in set(evidence_ids)] or evidence_ids,
+                    }
+                )
+                quality_modes = [mode for mode in report.failure_modes if mode != FailureMode.NON_CONVERGENCE]
+                allowed, overridden, _remaining = decision_allows_override(
+                    decision,
+                    failure_modes=quality_modes,
+                    allowed_modes=OVERRIDABLE_QUALITY_MODES,
+                )
+                enrich_latest_trace(
+                    trace,
+                    agent="evaluator",
+                    **decision_trace_payload(decision, overridden=overridden, evidence_ids=decision.evidence_ids),
+                )
+                if allowed:
+                    messages = list(report.messages)
+                    messages.append("LLM 高置信放行本地拓扑质量告警。")
+                    report = report.model_copy(
+                        update={
+                            "success": True,
+                            "has_quality_failure": False,
+                            "messages": messages,
+                            "llm_decision": decision,
+                            "overridden_failure_modes": overridden,
+                        }
+                    )
+                    return report, None, evidence
+                report = report.model_copy(update={"llm_decision": decision, "overridden_failure_modes": overridden})
         repair_plan = build_repair_plan(
             case_spec,
             [mode for mode in report.failure_modes if mode != FailureMode.NON_CONVERGENCE],
             repair_iteration=repair_iteration,
             max_repair_rounds=max_repair_rounds,
-            evidence_ids=[item.evidence_id for item in evidence],
+            evidence_ids=evidence_ids,
         )
         report = report.model_copy(update={"repair_plan": repair_plan})
     return report, repair_plan, evidence

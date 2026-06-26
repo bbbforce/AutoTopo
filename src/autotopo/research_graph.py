@@ -21,6 +21,7 @@ from autotopo.diagnostics.repair_rules import apply_repair_plan
 from autotopo.rag.corrective_rag import retrieve_for_codegen, retrieve_for_validation_failure
 from autotopo.rag.retriever import LocalRetriever
 from autotopo.schemas import (
+    AgentAuthority,
     BenchmarkCaseResult,
     BenchmarkMethod,
     CaseSpec,
@@ -146,41 +147,96 @@ def run_research_workflow(
     llm_provider: str | None = None,
     llm_overrides: dict[str, Any] | None = None,
     agent_llms: dict[str, Any] | None = None,
+    agent_authority: AgentAuthority | str = AgentAuthority.DETERMINISTIC,
+    allow_generated_code: bool = False,
+    generated_code_timeout_s: int = 60,
+    tracer: Any | None = None,
 ) -> BenchmarkCaseResult:
     """运行单个 case-method 的最小研究 workflow。
 
-    LLM agents are opt-in. When enabled, Scientist/Planner/Reviewer try a
-    structured LLM call first and fall back to deterministic rules on failure.
+    LLM agents 默认关闭。`use_llm_agents=True` 保持兼容并映射为 llm_assisted；
+    只有 llm_primary 才允许 LLM 覆盖本地判断或自动执行生成脚本。
     """
 
     method = BenchmarkMethod(method)
     retriever = LocalRetriever()
     agent_llms = agent_llms or {}
+    authority = AgentAuthority(agent_authority)
+    if authority == AgentAuthority.DETERMINISTIC and (use_llm_agents or llm_provider or agent_llms):
+        authority = AgentAuthority.LLM_ASSISTED
+    allow_llm_override = authority == AgentAuthority.LLM_PRIMARY
     llm_agent_trace: list[dict[str, Any]] = []
 
+    def _start(stage: str, agent: str, summary: str, payload: Any | None = None) -> Any:
+        if tracer is None:
+            return None
+        return tracer.start_stage(stage, agent=agent, summary=summary, payload=payload)
+
+    def _complete(
+        token: Any,
+        *,
+        summary: str,
+        payload: Any | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if tracer is not None:
+            tracer.complete_stage(token, summary=summary, payload=payload, artifacts=artifacts)
+
+    def _fail(token: Any, exc: BaseException, payload: Any | None = None) -> None:
+        if tracer is not None:
+            tracer.fail_stage(token, exc, payload=payload)
+
     def _use_llm(agent_name: str) -> bool:
+        if authority == AgentAuthority.DETERMINISTIC:
+            return False
         return bool(use_llm_agents or llm_provider or agent_name in agent_llms)
 
-    case_spec = case_or_text if isinstance(case_or_text, CaseSpec) else build_case_spec(
-        case_or_text,
-        structured_params=structured_params,
-        quick=quick,
-        use_llm=_use_llm("scientist"),
-        llm_provider=llm_provider,
-        llm=agent_llms.get("scientist"),
-        llm_overrides=llm_overrides,
-        trace=llm_agent_trace,
+    def _diagnosis_requests(diagnosis: FailureDiagnosis | None, action: str) -> bool:
+        if diagnosis is None:
+            return False
+        needle = action.lower()
+        return any(needle in item.lower().replace("-", "_") for item in diagnosis.repair_suggestions)
+
+    scientist_token = _start(
+        "scientist",
+        "Scientist",
+        "Scientist 构建 CaseSpec",
+        {"quick": quick, "llm_enabled": _use_llm("scientist"), "agent_authority": authority.value},
     )
-    if not case_spec.problem:
-        from autotopo.engines.structured_benchmarks import case_to_problem
+    try:
+        case_spec = case_or_text if isinstance(case_or_text, CaseSpec) else build_case_spec(
+            case_or_text,
+            structured_params=structured_params,
+            quick=quick,
+            use_llm=_use_llm("scientist"),
+            llm_provider=llm_provider,
+            llm=agent_llms.get("scientist"),
+            llm_overrides=llm_overrides,
+            trace=llm_agent_trace,
+        )
+        if not case_spec.problem:
+            from autotopo.engines.structured_benchmarks import case_to_problem
 
-        case_spec = case_spec.model_copy(update={"problem": case_to_problem(case_spec)})
+            case_spec = case_spec.model_copy(update={"problem": case_to_problem(case_spec)})
 
-    # 默认输出到项目 output 下的研究 workflow 独立子目录。
-    if output_dir is None:
-        output_dir = Path("output") / "research_graph" / f"{case_spec.case_id}__{method.value}"
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+        # 默认输出到项目 output 下的研究 workflow 独立子目录。
+        if output_dir is None:
+            output_dir = Path("output") / "research_graph" / f"{case_spec.case_id}__{method.value}"
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        _write_json(out / "case_spec.json", case_spec.model_dump(mode="json"))
+        _write_json(out / "llm_agent_trace.json", llm_agent_trace)
+    except Exception as exc:
+        _fail(scientist_token, exc)
+        raise
+    _complete(
+        scientist_token,
+        summary="Scientist 完成 CaseSpec",
+        payload={
+            "case_spec": case_spec.model_dump(mode="json"),
+            "llm_agent_trace": llm_agent_trace,
+        },
+    )
 
     all_evidence: list[RetrievedEvidence] = []
     codegen_evidence: list[RetrievedEvidence] = []
@@ -194,13 +250,46 @@ def run_research_workflow(
     final_diagnosis: FailureDiagnosis | None = None
     first_pass_success = False
 
-    _write_json(out / "case_spec.json", case_spec.model_dump(mode="json"))
-    _write_json(out / "llm_agent_trace.json", llm_agent_trace)
-    validation_report = validate(case_spec)
-    _write_json(out / "validation_report.json", validation_report.model_dump(mode="json"))
+    validator_token = _start(
+        "validator",
+        "Validator",
+        "Validator 执行 fail-closed 检查",
+        {"llm_enabled": _use_llm("validator"), "allow_llm_override": allow_llm_override},
+    )
+    try:
+        validation_report = validate(
+            case_spec,
+            retriever=retriever,
+            use_llm=_use_llm("validator"),
+            allow_llm_override=allow_llm_override,
+            llm_provider=llm_provider,
+            llm=agent_llms.get("validator"),
+            llm_overrides=llm_overrides,
+            trace=llm_agent_trace,
+        )
+        if validation_report.local_is_valid is False or validation_report.evidence_ids:
+            validation_rag_report = validation_report
+            if validation_report.overridden_failure_modes and not validation_report.failure_modes:
+                validation_rag_report = validation_report.model_copy(
+                    update={
+                        "is_valid": False,
+                        "failure_modes": validation_report.overridden_failure_modes,
+                    }
+                )
+            validation_evidence = retrieve_for_validation_failure(validation_rag_report, case_spec, retriever)
+            all_evidence.extend(validation_evidence)
+        _write_json(out / "validation_report.json", validation_report.model_dump(mode="json"))
+        _write_json(out / "retrieved_evidence_validation.json", _model_dump(validation_evidence))
+        _write_json(out / "llm_agent_trace.json", llm_agent_trace)
+    except Exception as exc:
+        _fail(validator_token, exc)
+        raise
+    _complete(
+        validator_token,
+        summary="Validator 检查完成",
+        payload=validation_report.model_dump(mode="json"),
+    )
     if not validation_report.is_valid:
-        validation_evidence = retrieve_for_validation_failure(validation_report, case_spec, retriever)
-        all_evidence.extend(validation_evidence)
         code_plan = CodePlan(
             case_id=case_spec.case_id,
             method=method,
@@ -218,7 +307,6 @@ def run_research_workflow(
         _write_json(out / "retrieved_evidence_codegen.json", [])
         _write_json(out / "retrieved_evidence_execution_repair.json", [])
         _write_json(out / "retrieved_evidence_critic_repair.json", [])
-        _write_json(out / "retrieved_evidence_validation.json", _model_dump(validation_evidence))
         _write_json(out / "retrieved_evidence.json", _model_dump(all_evidence))
         _write_json(out / "code_plan.json", code_plan.model_dump(mode="json"))
         final_diagnosis = FailureDiagnosis(
@@ -249,48 +337,139 @@ def run_research_workflow(
             failure_diagnosis=final_diagnosis,
         )
         _write_final_summary(out / "final_summary.md", result, repair_trace)
+        summary_token = _start("final_summary", "Reporter", "保存研究 workflow 摘要")
+        _complete(summary_token, summary="研究 workflow fail-closed 完成", payload=result.model_dump(mode="json"))
         return result
 
-    if method in {BenchmarkMethod.BASELINE_NAIVE_RAG, BenchmarkMethod.OURS_CORRECTIVE_RAG}:
-        codegen_evidence = retrieve_for_codegen(case_spec, retriever)
-        all_evidence.extend(codegen_evidence)
-    _write_json(out / "retrieved_evidence_codegen.json", _model_dump(codegen_evidence))
-    _write_json(out / "retrieved_evidence_execution_repair.json", [])
-    _write_json(out / "retrieved_evidence_critic_repair.json", [])
-    _write_json(out / "retrieved_evidence_validation.json", [])
-    _write_json(out / "retrieved_evidence.json", _model_dump(all_evidence))
-    code_plan = select_or_generate_code(
-        plan_code(
-            case_spec,
-            method,
-            all_evidence,
-            use_llm=_use_llm("planner"),
+    planner_token = _start(
+        "planner_coder",
+        "Planner/Coder",
+        "Planner/Coder 选择求解计划",
+        {
+            "method": method.value,
+            "llm_enabled": _use_llm("planner"),
+            "coder_llm_enabled": _use_llm("coder"),
+            "allow_generated_code": allow_generated_code,
+            "agent_authority": authority.value,
+        },
+    )
+    try:
+        if method in {BenchmarkMethod.BASELINE_NAIVE_RAG, BenchmarkMethod.OURS_CORRECTIVE_RAG}:
+            codegen_evidence = retrieve_for_codegen(case_spec, retriever)
+            all_evidence.extend(codegen_evidence)
+        _write_json(out / "retrieved_evidence_codegen.json", _model_dump(codegen_evidence))
+        _write_json(out / "retrieved_evidence_execution_repair.json", [])
+        _write_json(out / "retrieved_evidence_critic_repair.json", [])
+        _write_json(out / "retrieved_evidence_validation.json", _model_dump(validation_evidence))
+        _write_json(out / "retrieved_evidence.json", _model_dump(all_evidence))
+        code_plan = select_or_generate_code(
+            plan_code(
+                case_spec,
+                method,
+                all_evidence,
+                use_llm=_use_llm("planner"),
+                llm_provider=llm_provider,
+                llm=agent_llms.get("planner"),
+                llm_overrides=llm_overrides,
+                trace=llm_agent_trace,
+            ),
+            case_spec=case_spec,
+            evidence=all_evidence,
+            output_dir=out,
+            agent_authority=authority,
+            allow_generated_code=allow_generated_code,
+            use_llm=_use_llm("coder"),
             llm_provider=llm_provider,
-            llm=agent_llms.get("planner"),
+            llm=agent_llms.get("coder"),
             llm_overrides=llm_overrides,
             trace=llm_agent_trace,
         )
+        _write_json(out / "code_plan.json", code_plan.model_dump(mode="json"))
+        _write_json(out / "llm_agent_trace.json", llm_agent_trace)
+    except Exception as exc:
+        _fail(planner_token, exc)
+        raise
+    _complete(
+        planner_token,
+        summary="Planner/Coder 计划完成",
+        payload={
+            "code_plan": code_plan.model_dump(mode="json"),
+            "evidence_count": len(codegen_evidence),
+            "llm_agent_trace": llm_agent_trace,
+        },
     )
-    _write_json(out / "code_plan.json", code_plan.model_dump(mode="json"))
-    _write_json(out / "llm_agent_trace.json", llm_agent_trace)
 
     for repair_iteration in range(max_repair_rounds + 1):
-        final_execution = execute(case_spec, code_plan, out)
+        executor_token = _start(
+            "executor",
+            "Executor",
+            f"Executor 执行第 {repair_iteration} 轮",
+            {"repair_iteration": repair_iteration},
+        )
+        try:
+            final_execution = execute(
+                case_spec,
+                code_plan,
+                out,
+                generated_code_timeout_s=generated_code_timeout_s,
+            )
+            if code_plan.execution_mode == "generated_script":
+                llm_agent_trace.append(
+                    {
+                        "agent": "executor",
+                        "enabled": True,
+                        "used_llm": False,
+                        "fallback_reason": "",
+                        "execution_mode": "generated_script",
+                        "sandbox": final_execution.metrics.get("sandbox", {}),
+                        "success": final_execution.success,
+                        "error_type": final_execution.error_type or "",
+                    }
+                )
+                _write_json(out / "llm_agent_trace.json", llm_agent_trace)
+        except Exception as exc:
+            _fail(executor_token, exc)
+            raise
+        _complete(
+            executor_token,
+            summary=f"Executor 第 {repair_iteration} 轮完成",
+            payload=final_execution.model_dump(mode="json"),
+        )
         if repair_iteration == 0:
             first_pass_success = final_execution.success
 
         if not final_execution.success:
-            final_diagnosis, repair_plan, evidence = review_execution_failure(
-                case_spec,
-                final_execution,
-                repair_iteration=repair_iteration,
-                max_repair_rounds=max_repair_rounds,
-                retriever=retriever,
-                use_llm=_use_llm("reviewer"),
-                llm_provider=llm_provider,
-                llm=agent_llms.get("reviewer"),
-                llm_overrides=llm_overrides,
-                trace=llm_agent_trace,
+            reviewer_token = _start(
+                "reviewer",
+                "Reviewer",
+                f"Reviewer 诊断第 {repair_iteration} 轮执行失败",
+                {"llm_enabled": _use_llm("reviewer")},
+            )
+            try:
+                final_diagnosis, repair_plan, evidence = review_execution_failure(
+                    case_spec,
+                    final_execution,
+                    repair_iteration=repair_iteration,
+                    max_repair_rounds=max_repair_rounds,
+                    retriever=retriever,
+                    use_llm=_use_llm("reviewer"),
+                    llm_provider=llm_provider,
+                    llm=agent_llms.get("reviewer"),
+                    llm_overrides=llm_overrides,
+                    trace=llm_agent_trace,
+                )
+            except Exception as exc:
+                _fail(reviewer_token, exc)
+                raise
+            _complete(
+                reviewer_token,
+                summary="Reviewer 诊断完成",
+                payload={
+                    "failure_diagnosis": final_diagnosis.model_dump(mode="json"),
+                    "repair_plan": repair_plan.model_dump(mode="json"),
+                    "evidence_count": len(evidence),
+                    "llm_agent_trace": llm_agent_trace,
+                },
             )
             final_repair_plan = repair_plan
             execution_repair_evidence.extend(evidence)
@@ -298,19 +477,127 @@ def run_research_workflow(
             _write_json(out / "retrieved_evidence_execution_repair.json", _model_dump(execution_repair_evidence))
             _write_json(out / "repair_plan.json", final_repair_plan.model_dump(mode="json"))
             if method == BenchmarkMethod.OURS_CORRECTIVE_RAG and repair_plan.should_repair:
+                repair_token = _start("repair", "Repair", "应用执行失败修复计划")
                 repair_trace.append(repair_plan)
                 case_spec = apply_repair_plan(case_spec, repair_plan)
                 _write_json(out / "repair_trace.json", _model_dump(repair_trace))
+                _complete(
+                    repair_token,
+                    summary="执行失败修复计划已应用",
+                    payload=repair_plan.model_dump(mode="json"),
+                )
+                continue
+            if (
+                method == BenchmarkMethod.OURS_CORRECTIVE_RAG
+                and code_plan.execution_mode == "generated_script"
+                and _diagnosis_requests(final_diagnosis, "fallback_template")
+            ):
+                repair_token = _start("repair", "Repair", "Reviewer 要求回退模板执行")
+                fallback_plan = RepairPlan(
+                    case_id=case_spec.case_id,
+                    should_repair=True,
+                    repair_iteration=repair_iteration,
+                    max_repair_rounds=max_repair_rounds,
+                    repair_type="fallback_template",
+                    rationale="Reviewer 建议从生成脚本回退到模板执行。",
+                    reason="Reviewer 建议从生成脚本回退到模板执行。",
+                    failure_modes=final_diagnosis.failure_modes,
+                    evidence_ids=final_diagnosis.evidence_ids,
+                    auto_repair_allowed=True,
+                    auto_apply_allowed=True,
+                    risk_level="medium",
+                )
+                final_repair_plan = fallback_plan
+                repair_trace.append(fallback_plan)
+                code_plan = select_or_generate_code(code_plan, agent_authority=AgentAuthority.DETERMINISTIC)
+                _write_json(out / "code_plan.json", code_plan.model_dump(mode="json"))
+                _write_json(out / "repair_trace.json", _model_dump(repair_trace))
+                _complete(repair_token, summary="已回退到模板执行", payload=fallback_plan.model_dump(mode="json"))
+                continue
+            if (
+                method == BenchmarkMethod.OURS_CORRECTIVE_RAG
+                and code_plan.execution_mode == "generated_script"
+                and allow_generated_code
+                and authority == AgentAuthority.LLM_PRIMARY
+                and _diagnosis_requests(final_diagnosis, "regenerate_code")
+            ):
+                repair_token = _start("repair", "Repair", "Reviewer 要求重新生成代码")
+                regenerate_plan = RepairPlan(
+                    case_id=case_spec.case_id,
+                    should_repair=True,
+                    repair_iteration=repair_iteration,
+                    max_repair_rounds=max_repair_rounds,
+                    repair_type="regenerate_code",
+                    rationale="Reviewer 建议重新生成脚本。",
+                    reason="Reviewer 建议重新生成脚本。",
+                    failure_modes=final_diagnosis.failure_modes,
+                    evidence_ids=final_diagnosis.evidence_ids,
+                    auto_repair_allowed=True,
+                    auto_apply_allowed=True,
+                    risk_level="medium",
+                )
+                final_repair_plan = regenerate_plan
+                repair_trace.append(regenerate_plan)
+                code_plan = select_or_generate_code(
+                    plan_code(
+                        case_spec,
+                        method,
+                        all_evidence,
+                        use_llm=_use_llm("planner"),
+                        llm_provider=llm_provider,
+                        llm=agent_llms.get("planner"),
+                        llm_overrides=llm_overrides,
+                        trace=llm_agent_trace,
+                    ),
+                    case_spec=case_spec,
+                    evidence=all_evidence,
+                    output_dir=out,
+                    agent_authority=authority,
+                    allow_generated_code=allow_generated_code,
+                    use_llm=_use_llm("coder"),
+                    llm_provider=llm_provider,
+                    llm=agent_llms.get("coder"),
+                    llm_overrides=llm_overrides,
+                    trace=llm_agent_trace,
+                )
+                _write_json(out / "code_plan.json", code_plan.model_dump(mode="json"))
+                _write_json(out / "repair_trace.json", _model_dump(repair_trace))
+                _write_json(out / "llm_agent_trace.json", llm_agent_trace)
+                _complete(repair_token, summary="已重新生成代码计划", payload=regenerate_plan.model_dump(mode="json"))
                 continue
             break
 
         final_diagnosis = _empty_diagnosis(case_spec)
-        final_evaluator, repair_plan, evidence = evaluate_execution(
-            case_spec,
-            final_execution,
-            repair_iteration=repair_iteration,
-            max_repair_rounds=max_repair_rounds,
-            retriever=retriever,
+        evaluator_token = _start(
+            "evaluator",
+            "Evaluator",
+            f"Evaluator 评估第 {repair_iteration} 轮拓扑质量",
+        )
+        try:
+            final_evaluator, repair_plan, evidence = evaluate_execution(
+                case_spec,
+                final_execution,
+                repair_iteration=repair_iteration,
+                max_repair_rounds=max_repair_rounds,
+                retriever=retriever,
+                use_llm=_use_llm("evaluator"),
+                allow_llm_override=allow_llm_override,
+                llm_provider=llm_provider,
+                llm=agent_llms.get("evaluator"),
+                llm_overrides=llm_overrides,
+                trace=llm_agent_trace,
+            )
+        except Exception as exc:
+            _fail(evaluator_token, exc)
+            raise
+        _complete(
+            evaluator_token,
+            summary="Evaluator 评估完成",
+            payload={
+                "evaluator_report": final_evaluator.model_dump(mode="json"),
+                "repair_plan": repair_plan.model_dump(mode="json") if repair_plan is not None else None,
+                "evidence_count": len(evidence),
+            },
         )
         if repair_plan is not None:
             final_repair_plan = repair_plan
@@ -323,9 +610,15 @@ def run_research_workflow(
             and repair_plan is not None
             and repair_plan.should_repair
         ):
+            repair_token = _start("repair", "Repair", "应用拓扑质量修复计划")
             repair_trace.append(repair_plan)
             case_spec = apply_repair_plan(case_spec, repair_plan)
             _write_json(out / "repair_trace.json", _model_dump(repair_trace))
+            _complete(
+                repair_token,
+                summary="拓扑质量修复计划已应用",
+                payload=repair_plan.model_dump(mode="json"),
+            )
             continue
         break
 
@@ -353,4 +646,6 @@ def run_research_workflow(
         failure_diagnosis=final_diagnosis,
     )
     _write_final_summary(out / "final_summary.md", result, repair_trace)
+    summary_token = _start("final_summary", "Reporter", "保存研究 workflow 摘要")
+    _complete(summary_token, summary="研究 workflow 完成", payload=result.model_dump(mode="json"))
     return result
