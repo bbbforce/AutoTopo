@@ -16,6 +16,7 @@ class AutoTopoState(TypedDict, total=False):
     # ── 用户输入 ──
     user_input: str                          # 用户文本描述
     image_paths: list[str]                   # 设计域/非设计域示意图路径
+    llm_provider: str                        # 本次运行指定的 LLM provider
 
     # ── 解析结果 ──
     problem_definition: dict[str, Any]       # OptimizationProblem.model_dump()

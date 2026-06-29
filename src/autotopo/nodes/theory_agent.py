@@ -39,7 +39,7 @@ THEORY_SYSTEM_PROMPT = """\
 
 def theory_derivation(state: AutoTopoState) -> dict[str, Any]:
     """理论推导节点：推导自定义约束的变分形式。"""
-    llm = get_llm()
+    llm = get_llm(provider=state.get("llm_provider"))
 
     unknown = state.get("unknown_constraints", [])
     problem_yaml = state.get("problem_yaml", "")

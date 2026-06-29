@@ -56,7 +56,7 @@ def _validate_syntax(code: str) -> str:
 
 def code_generation(state: AutoTopoState) -> dict[str, Any]:
     """代码生成节点：理论公式 → FEniCS 兼容代码。"""
-    llm = get_llm()
+    llm = get_llm(provider=state.get("llm_provider"))
 
     theory = state.get("theory_result", "")
     problem_yaml = state.get("problem_yaml", "")

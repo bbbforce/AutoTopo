@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/autotopo-matplotlib")
 
 import matplotlib
 matplotlib.use("Agg")  # 非交互式后端，适用于 Docker 无 GUI 环境
@@ -20,6 +23,8 @@ def plot_density_field(
     title: str = "Topology Optimization Result",
     dpi: int = 300,
     cmap: str = "gray_r",
+    binary_threshold: float | None = None,
+    show_axes: bool = True,
     show: bool = False,
 ) -> str | None:
     """绘制 2D 密度场分布图。
@@ -29,11 +34,18 @@ def plot_density_field(
     densities : 2D 密度数组 (nely x nelx)
     save_path : 保存路径，None 则不保存
     """
+    field = np.asarray(densities, dtype=float)
+    if binary_threshold is not None:
+        field = (field >= binary_threshold).astype(float)
+
     fig, ax = plt.subplots(1, 1, figsize=(10, 5))
-    ax.imshow(densities, cmap=cmap, origin="upper", vmin=0, vmax=1)
+    ax.imshow(field, cmap=cmap, origin="upper", vmin=0, vmax=1, interpolation="nearest")
     ax.set_title(title, fontsize=14)
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
+    if show_axes:
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+    else:
+        ax.set_axis_off()
     ax.set_aspect("equal")
     plt.tight_layout()
 
@@ -106,6 +118,7 @@ def plot_convergence_history(
     volume_history: list[float],
     save_path: str | None = None,
     *,
+    title: str = "Convergence History",
     dpi: int = 300,
     show: bool = False,
 ) -> str | None:
@@ -127,7 +140,10 @@ def plot_convergence_history(
     ax1.set_ylabel("Compliance", color=color1, fontsize=12)
     ax1.plot(iterations, compliance_history, color=color1, linewidth=1.5, label="Compliance")
     ax1.tick_params(axis="y", labelcolor=color1)
-    ax1.set_xlim(1, len(compliance_history))
+    if len(compliance_history) > 1:
+        ax1.set_xlim(1, len(compliance_history))
+    else:
+        ax1.set_xlim(0.5, 1.5)
 
     # 右轴：体积分数
     ax2 = ax1.twinx()
@@ -137,7 +153,7 @@ def plot_convergence_history(
     ax2.tick_params(axis="y", labelcolor=color2)
 
     # 标题和图例
-    fig.suptitle("Convergence History", fontsize=14, fontweight="bold")
+    fig.suptitle(title, fontsize=14, fontweight="bold")
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="center right")

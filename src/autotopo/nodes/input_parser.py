@@ -97,7 +97,11 @@ def _encode_image(path: str) -> str:
 
 def parse_input(state: AutoTopoState) -> dict[str, Any]:
     """多模态解析节点：文本 + 图片 → 结构化问题定义。"""
-    llm = get_llm(vision=True, structured_output=OptimizationProblem)
+    llm = get_llm(
+        provider=state.get("llm_provider"),
+        vision=True,
+        structured_output=OptimizationProblem,
+    )
 
     # 构建多模态消息
     content: list[dict] = [
