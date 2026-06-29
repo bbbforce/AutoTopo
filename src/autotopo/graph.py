@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from langgraph.graph import END, StateGraph
@@ -23,6 +23,45 @@ from autotopo.nodes.router import route_decision, route_problem
 from autotopo.nodes.simulator import run_simulation
 from autotopo.nodes.theory_agent import theory_derivation
 from autotopo.state import AutoTopoState
+
+
+def _instrument_node(
+    name: str,
+    node: Callable[[AutoTopoState], dict[str, Any]],
+    tracer: Any | None,
+    *,
+    agent: str | None = None,
+) -> Callable[[AutoTopoState], dict[str, Any]]:
+    """为 LangGraph 节点增加可选运行时事件记录。"""
+
+    if tracer is None:
+        return node
+
+    def wrapped(state: AutoTopoState) -> dict[str, Any]:
+        token = tracer.start_stage(
+            name,
+            agent=agent,
+            summary=f"{name} 开始",
+            payload={
+                "iteration": state.get("iteration", 0),
+                "solve_stage": state.get("solve_stage", ""),
+                "route": state.get("route", ""),
+            },
+        )
+        try:
+            result = node(state)
+        except Exception as exc:
+            tracer.fail_stage(token, exc, payload={"state_keys": sorted(state.keys())})
+            raise
+
+        tracer.complete_stage(
+            token,
+            summary=f"{name} 完成",
+            payload=result,
+        )
+        return result
+
+    return wrapped
 
 
 def _save_output(state: AutoTopoState) -> dict[str, Any]:
@@ -155,21 +194,36 @@ def _generate_report(state: AutoTopoState, output_dir: Path) -> None:
     report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def build_graph() -> StateGraph:
+def build_graph(tracer: Any | None = None) -> StateGraph:
     """构建并返回 AutoTopo 工作流图。"""
 
     workflow = StateGraph(AutoTopoState)
 
     # ── 注册节点 ──
-    workflow.add_node("parse_input", parse_input)
-    workflow.add_node("route_problem", route_problem)
-    workflow.add_node("theory_derivation", theory_derivation)
-    workflow.add_node("code_generation", code_generation)
-    workflow.add_node("run_simulation", run_simulation)
-    workflow.add_node("evaluate_result", evaluate_result)
-    workflow.add_node("apply_fixes", apply_fixes)
-    workflow.add_node("prepare_final_refine", prepare_final_refine)
-    workflow.add_node("save_output", _save_output)
+    workflow.add_node("parse_input", _instrument_node("parse_input", parse_input, tracer, agent="Parser"))
+    workflow.add_node("route_problem", _instrument_node("route_problem", route_problem, tracer, agent="Router"))
+    workflow.add_node(
+        "theory_derivation",
+        _instrument_node("theory_derivation", theory_derivation, tracer, agent="Theory Agent"),
+    )
+    workflow.add_node(
+        "code_generation",
+        _instrument_node("code_generation", code_generation, tracer, agent="Codegen Agent"),
+    )
+    workflow.add_node(
+        "run_simulation",
+        _instrument_node("run_simulation", run_simulation, tracer, agent="Simulator"),
+    )
+    workflow.add_node(
+        "evaluate_result",
+        _instrument_node("evaluate_result", evaluate_result, tracer, agent="Evaluator"),
+    )
+    workflow.add_node("apply_fixes", _instrument_node("apply_fixes", apply_fixes, tracer, agent="Fixer"))
+    workflow.add_node(
+        "prepare_final_refine",
+        _instrument_node("prepare_final_refine", prepare_final_refine, tracer, agent="Refiner"),
+    )
+    workflow.add_node("save_output", _instrument_node("save_output", _save_output, tracer, agent="Reporter"))
 
     # ── 定义边 ──
 
@@ -219,6 +273,6 @@ def build_graph() -> StateGraph:
     return workflow
 
 
-def compile_graph():
+def compile_graph(tracer: Any | None = None):
     """编译工作流图，返回可执行的 app。"""
-    return build_graph().compile()
+    return build_graph(tracer=tracer).compile()

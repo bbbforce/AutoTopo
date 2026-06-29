@@ -76,7 +76,11 @@ EVALUATOR_SYSTEM_PROMPT = """\
 
 def evaluate_result(state: AutoTopoState) -> dict[str, Any]:
     """视觉评估节点：LLM 检查结果图 → 缺陷报告。"""
-    llm = get_llm(vision=True, structured_output=EvaluationResult)
+    llm = get_llm(
+        provider=state.get("llm_provider"),
+        vision=True,
+        structured_output=EvaluationResult,
+    )
 
     img_path = state["result_image_path"]
     img_b64 = base64.b64encode(Path(img_path).read_bytes()).decode("utf-8")

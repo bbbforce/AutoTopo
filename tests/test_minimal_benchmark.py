@@ -7,6 +7,7 @@ from pathlib import Path
 
 from autotopo.engines.structured_benchmarks import default_case_spec
 from autotopo.experiments.run_minimal_benchmark import run_minimal_benchmark
+from autotopo.monitoring import WorkflowTracer, read_jsonl
 from autotopo.research_graph import run_research_workflow
 from autotopo.schemas import BenchmarkMethod
 
@@ -65,3 +66,32 @@ def test_research_workflow_default_output_under_project_output(tmp_path, monkeyp
     expected = tmp_path / "output" / "research_graph" / "cantilever_clear__ours_corrective_rag"
     assert tmp_path / Path(result.output_dir) == expected
     assert (expected / "case_spec.json").exists()
+
+
+def test_research_workflow_tracer_records_agent_timeline(tmp_path):
+    tracer = WorkflowTracer(run_id="research-test", workflow_type="research", output_dir=tmp_path)
+
+    result = run_research_workflow(
+        "请做一个快速悬臂梁 benchmark",
+        output_dir=tmp_path,
+        method=BenchmarkMethod.BASELINE_DIRECT,
+        quick=True,
+        max_repair_rounds=0,
+        tracer=tracer,
+    )
+
+    events = read_jsonl(tmp_path / "workflow_events.jsonl")
+    completed = [event for event in events if event["status"] == "completed"]
+    completed_stages = [event["stage"] for event in completed]
+    progress_events = [event for event in events if event["stage"] == "optimization_iteration"]
+    assert result.output_dir == str(tmp_path)
+    assert "scientist" in completed_stages
+    assert "validator" in completed_stages
+    assert "planner_coder" in completed_stages
+    assert "executor" in completed_stages
+    assert "evaluator" in completed_stages
+    assert "final_summary" in completed_stages
+    assert progress_events
+    assert {"iteration", "max_iter", "compliance", "volume", "change"} <= set(progress_events[0]["payload"])
+    assert (tmp_path / "case_spec.json").exists()
+    assert (tmp_path / "workflow_events.jsonl").exists()

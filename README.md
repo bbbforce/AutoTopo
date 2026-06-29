@@ -125,7 +125,26 @@ python -m autotopo run "标准半对称 MBB 梁拓扑优化问题。设计域尺
 - `--solve-profile`: 求解模式，默认 `preview_refine`；可选 `preview_refine`、`final_only`、`preview_only`。
 - `--provider`: 指定本次运行使用的 LLM provider。
 
-### 6. 直接运行数值求解器
+### 6. 启动实时监控前端
+
+本地前端用于在浏览器里启动主 workflow 或最小研究 workflow，并实时查看阶段进度、agent 输出、错误信息、图片和 JSON 产物。建议在 `AT-env` 中运行：
+
+```bash
+conda run --no-capture-output -n AT-env python -m autotopo ui --host 0.0.0.0 --port 8766
+```
+
+在 Windows 浏览器中优先打开启动日志里的 `Windows 浏览器可尝试` 地址，例如 `http://172.18.8.129:8766/`。如果你的 WSL localhost 转发正常，也可以打开 `http://127.0.0.1:8766/`。
+
+- 主 workflow：展示 `parse_input`、`route_problem`、`run_simulation`、`evaluate_result`、`apply_fixes`、`save_output` 等阶段。
+- 研究 workflow：展示 `Scientist`、`Validator`、`Planner/Coder`、`Executor`、`Reviewer`、`Evaluator`、`Repair` 等 agent 阶段。
+
+UI 默认输出到 `output/ui_runs/`。每个 run 会保存：
+
+- `workflow_events.jsonl`: 实时 timeline 事件，可用于刷新后回放。
+- `run_record.json`: run 状态、请求参数和最终结果。
+- workflow 原有结果文件，例如 `problem_definition.yaml`、`report.md`、`case_spec.json`、`code_plan.json`、`density.png`。
+
+### 7. 直接运行数值求解器
 
 绕过 LLM 和 LangGraph，直接调用 FEniCS + dolfin-adjoint 后端：
 
@@ -145,7 +164,7 @@ python -m autotopo solve --preset cantilever --mesh-res 1.0 --volfrac 0.4 --pena
 python -m autotopo solve --preset mbb --profile preview --max-iter 20
 ```
 
-### 7. 运行最小研究 benchmark
+### 8. 运行最小研究 benchmark
 
 最小研究 benchmark 不依赖 Docker，也不依赖 LLM API Key。它使用本地 `PythonSimpMMAEngine`、本地关键词 RAG 和 rule-based agents，默认输出到项目内的 `output/minimal_benchmark/`。
 

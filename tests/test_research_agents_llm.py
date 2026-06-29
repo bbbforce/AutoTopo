@@ -73,6 +73,39 @@ def test_scientist_uses_llm_draft_then_rebuilds_template_problem():
     ]
 
 
+def test_scientist_explicit_text_parameters_override_llm_defaults():
+    trace = []
+    llm = FakeLLM(
+        CaseSpecDraft(
+            case_id="llm_mbb",
+            benchmark_type=BenchmarkType.MBB,
+            nelx=90,
+            nely=30,
+            penal=3.0,
+            rmin=1.5,
+        )
+    )
+
+    spec = build_case_spec(
+        "标准半对称 MBB 梁拓扑优化问题。设计域尺寸为 150x50，"
+        "目标是最小化柔度，体积分数约束为 0.5，惩罚因子p=1，过滤半径r=10",
+        quick=False,
+        use_llm=True,
+        llm=llm,
+        trace=trace,
+    )
+
+    assert spec.case_id == "llm_mbb"
+    assert spec.nelx == 150
+    assert spec.nely == 50
+    assert spec.volume_fraction == pytest.approx(0.5)
+    assert spec.penal == pytest.approx(1.0)
+    assert spec.rmin == pytest.approx(10.0)
+    assert spec.problem["domain"]["nelx"] == 150
+    assert spec.problem["parameters"]["rmin"] == pytest.approx(10.0)
+    assert trace[0]["used_llm"] is True
+
+
 def test_scientist_falls_back_when_llm_fails():
     trace = []
 

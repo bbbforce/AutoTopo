@@ -10,7 +10,7 @@ import csv
 import json
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 from scipy.sparse import coo_matrix
@@ -92,6 +92,7 @@ class PythonSimpMMAEngine(TopoEngine):
         rmin: Optional[float] = None,
         volfrac: Optional[float] = None,
         ft: Optional[int] = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
         **_: Any,
     ) -> OptResult:
         """执行 SIMP/MMA 优化。"""
@@ -198,6 +199,19 @@ class PythonSimpMMAEngine(TopoEngine):
                 f"it.: {loop:4d}, obj.: {obj:.3f}, "
                 f"Vol.: {active_volume:.3f}, ch.: {change:.3f}, opt.: MMA"
             )
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "iteration": loop,
+                        "max_iter": max_iter,
+                        "compliance": obj,
+                        "volume": active_volume,
+                        "change": change,
+                        "converged": change <= tol,
+                        "tol": tol,
+                        "optimizer": "MMA",
+                    }
+                )
 
         self.densities = xPhys.copy()
         result = OptResult(

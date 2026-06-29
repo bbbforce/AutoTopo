@@ -95,10 +95,10 @@ def evaluate_execution(
         if vol_err > 0.08:
             failure_modes.append(FailureMode.VOLUME_CONSTRAINT_VIOLATION)
             messages.append(f"体积分数误差过大: {vol_err:.3f}")
-        if gray > 0.93:
+        if gray > 0.10:
             failure_modes.append(FailureMode.GRAYNESS_TOO_HIGH)
             messages.append(f"灰度指标过高: {gray:.3f}")
-        if checker > 0.45:
+        if checker > 0.10:
             failure_modes.append(FailureMode.CHECKERBOARD)
             messages.append(f"棋盘格指标过高: {checker:.3f}")
         if conn < 0.25:

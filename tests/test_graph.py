@@ -6,6 +6,7 @@ import numpy as np
 
 from autotopo.engines.base import OptResult
 from autotopo.graph import build_graph, compile_graph
+from autotopo.monitoring import WorkflowTracer, read_jsonl
 
 
 class FakeEngine:
@@ -197,3 +198,45 @@ class TestEndToEndMock:
         assert result["solve_stage"] == "final"
         # 应经过预览失败、预览通过、最终精修通过
         assert result["iteration"] >= 3
+
+    @patch("autotopo.nodes.input_parser.get_llm")
+    @patch("autotopo.nodes.evaluator.get_llm")
+    @patch("autotopo.nodes.simulator._get_engine", return_value=FakeEngine())
+    def test_instrumented_graph_writes_timeline(self, mock_get_engine, mock_eval_llm, mock_parser_llm, tmp_path):
+        """带 tracer 的主图应写出阶段事件，且不改变 workflow 结果。"""
+        problem_dict = self._mock_problem_dict()
+
+        mock_problem_obj = MagicMock()
+        mock_problem_obj.model_dump.return_value = problem_dict
+        mock_parser_model = MagicMock()
+        mock_parser_model.invoke.return_value = mock_problem_obj
+        mock_parser_llm.return_value = mock_parser_model
+
+        mock_eval_obj = MagicMock()
+        mock_eval_obj.model_dump.return_value = self._mock_eval_pass()
+        mock_eval_model = MagicMock()
+        mock_eval_model.invoke.return_value = mock_eval_obj
+        mock_eval_llm.return_value = mock_eval_model
+
+        tracer = WorkflowTracer(run_id="graph-test", workflow_type="main", output_dir=tmp_path)
+        app = compile_graph(tracer=tracer)
+        result = app.invoke({
+            "user_input": "悬臂梁测试",
+            "image_paths": [],
+            "max_retries": 1,
+            "solve_profile": "preview_only",
+            "solve_stage": "preview",
+            "final_refine_done": True,
+            "output_path": str(tmp_path),
+            "iteration": 0,
+            "history": [],
+        })
+
+        events = read_jsonl(tmp_path / "workflow_events.jsonl")
+        completed_stages = [event["stage"] for event in events if event["status"] == "completed"]
+        assert result["route"] == "standard_path"
+        assert "parse_input" in completed_stages
+        assert "route_problem" in completed_stages
+        assert "run_simulation" in completed_stages
+        assert "evaluate_result" in completed_stages
+        assert "save_output" in completed_stages

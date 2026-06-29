@@ -3,6 +3,7 @@
 用法:
     python -m autotopo run "设计一个悬臂梁..."
     python -m autotopo solve --preset cantilever --mesh-res 1.0
+    python -m autotopo ui
 """
 
 from __future__ import annotations
@@ -61,6 +62,14 @@ def main() -> None:
     solve_parser.add_argument("--max-iter", type=int, default=None, help="最大迭代数")
     solve_parser.add_argument("--output", default="./output", help="输出目录")
 
+    # ── ui: 本地实时监控前端 ──
+    ui_parser = subparsers.add_parser("ui", help="启动本地实时监控前端")
+    ui_parser.add_argument("--host", default="127.0.0.1", help="监听地址")
+    ui_parser.add_argument("--port", type=int, default=8765, help="监听端口")
+    ui_parser.add_argument("--output", default="./output/ui_runs", help="UI run 输出根目录")
+    ui_parser.add_argument("--open-browser", action="store_true", help="启动后尝试打开浏览器")
+    ui_parser.add_argument("--no-browser", action="store_true", help=argparse.SUPPRESS)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -71,6 +80,8 @@ def main() -> None:
         _run_workflow(args)
     elif args.command == "solve":
         _run_engine(args)
+    elif args.command == "ui":
+        _run_ui(args)
 
 
 def _run_workflow(args: argparse.Namespace) -> None:
@@ -91,6 +102,7 @@ def _run_workflow(args: argparse.Namespace) -> None:
     initial_state = {
         "user_input": args.prompt,
         "image_paths": args.images,
+        "llm_provider": args.provider,
         "max_retries": args.max_retries,
         "solve_profile": args.solve_profile,
         "solve_stage": initial_stage,
@@ -110,6 +122,18 @@ def _run_workflow(args: argparse.Namespace) -> None:
         print(f"   ⚠️ 仍存在缺陷: {result['evaluation'].get('defect_types', [])}")
     else:
         print("   质量评估: 合格")
+
+
+def _run_ui(args: argparse.Namespace) -> None:
+    """启动本地实时监控前端。"""
+    from autotopo.ui import serve_ui
+
+    serve_ui(
+        host=args.host,
+        port=args.port,
+        output=args.output,
+        open_browser=args.open_browser and not args.no_browser,
+    )
 
 
 def _run_engine(args: argparse.Namespace) -> None:

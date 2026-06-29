@@ -406,12 +406,43 @@ def run_research_workflow(
             f"Executor 执行第 {repair_iteration} 轮",
             {"repair_iteration": repair_iteration},
         )
+
+        def _format_progress_value(value: Any) -> str:
+            try:
+                return f"{float(value):.4g}"
+            except (TypeError, ValueError):
+                return "?"
+
+        def _progress_event(progress: dict[str, Any]) -> None:
+            if tracer is None:
+                return
+            iteration = progress.get("iteration")
+            max_iter = progress.get("max_iter")
+            summary = (
+                f"优化迭代 {iteration}/{max_iter}: "
+                f"compliance={_format_progress_value(progress.get('compliance'))}, "
+                f"volume={_format_progress_value(progress.get('volume'))}, "
+                f"change={_format_progress_value(progress.get('change'))}"
+            )
+            tracer.emit(
+                stage="optimization_iteration",
+                agent="Executor",
+                status="running",
+                summary=summary,
+                payload={
+                    **progress,
+                    "repair_iteration": repair_iteration,
+                    "case_id": case_spec.case_id,
+                },
+            )
+
         try:
             final_execution = execute(
                 case_spec,
                 code_plan,
                 out,
                 generated_code_timeout_s=generated_code_timeout_s,
+                progress_callback=_progress_event,
             )
             if code_plan.execution_mode == "generated_script":
                 llm_agent_trace.append(

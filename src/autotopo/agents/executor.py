@@ -11,6 +11,7 @@ import subprocess
 import sys
 import traceback as tb
 from pathlib import Path
+from typing import Any, Callable
 
 from autotopo.engines.python_simp_mma_engine import PythonSimpMMAEngine
 from autotopo.engines.structured_benchmarks import case_to_problem
@@ -246,6 +247,7 @@ def execute(
     output_dir: str | Path,
     *,
     generated_code_timeout_s: int = 60,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> ExecutionReport:
     """执行计划，捕获 stdout/stderr/traceback。"""
 
@@ -275,6 +277,7 @@ def execute(
                 penal=case_spec.penal,
                 rmin=case_spec.rmin,
                 volfrac=case_spec.volume_fraction,
+                progress_callback=progress_callback,
             )
             files = engine.save_outputs(out, result)
 
