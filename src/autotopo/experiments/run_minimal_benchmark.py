@@ -22,6 +22,8 @@ SUMMARY_FIELDS = [
     "benchmark_type",
     "method",
     "first_pass_success",
+    "execution_success",
+    "quality_success",
     "final_success",
     "repair_success",
     "repair_iterations",
@@ -60,11 +62,13 @@ def write_summary(results: list[BenchmarkCaseResult], output_dir: Path) -> None:
         "# Minimal Benchmark Summary",
         "",
         f"- total_runs: {len(results)}",
+        f"- execution_success: {sum(1 for item in results if item.execution_success)}",
+        f"- quality_success: {sum(1 for item in results if item.quality_success)}",
         f"- final_success: {sum(1 for item in results if item.final_success)}",
         f"- repair_success: {sum(1 for item in results if item.repair_success)}",
         "",
-        "| case_id | benchmark_type | method | first_pass_success | final_success | repair_iterations | failure_modes | compliance | volume_error | grayness_index | checkerboard_score | connectivity_score | converged |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| case_id | benchmark_type | method | first_pass_success | execution_success | quality_success | final_success | repair_iterations | failure_modes | compliance | volume_error | grayness_index | checkerboard_score | connectivity_score | converged |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for result in results:
         modes = ",".join(mode.value for mode in result.detected_failure_modes)
@@ -75,6 +79,8 @@ def write_summary(results: list[BenchmarkCaseResult], output_dir: Path) -> None:
                 result.benchmark_type.value,
                 result.method.value,
                 str(result.first_pass_success),
+                str(result.execution_success),
+                str(result.quality_success),
                 str(result.final_success),
                 str(result.repair_iterations),
                 modes,
@@ -99,6 +105,7 @@ def run_minimal_benchmark(
     agent_authority: str = "deterministic",
     allow_generated_code: bool = False,
     generated_code_timeout_s: int = 60,
+    persist_debug_artifacts: bool = False,
 ) -> list[BenchmarkCaseResult]:
     """运行 6 case × 3 method 的最小实验。"""
 
@@ -124,6 +131,7 @@ def run_minimal_benchmark(
                 agent_authority=agent_authority,
                 allow_generated_code=allow_generated_code,
                 generated_code_timeout_s=generated_code_timeout_s,
+                persist_debug_artifacts=persist_debug_artifacts,
             )
             results.append(result)
     write_summary(results, root)
@@ -144,6 +152,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--allow-generated-code", action="store_true", help="允许 Coder 生成脚本并由 Executor 自动执行")
     parser.add_argument("--generated-code-timeout", type=int, default=60, help="生成脚本子进程超时时间（秒）")
+    parser.add_argument("--persist-debug-artifacts", action="store_true", help="保存完整 evidence、因果快照和 artifact 历史")
     args = parser.parse_args(argv)
 
     results = run_minimal_benchmark(
@@ -154,9 +163,16 @@ def main(argv: list[str] | None = None) -> None:
         agent_authority=args.agent_authority,
         allow_generated_code=args.allow_generated_code,
         generated_code_timeout_s=args.generated_code_timeout,
+        persist_debug_artifacts=args.persist_debug_artifacts,
     )
     final_success = sum(1 for item in results if item.final_success)
-    print(f"minimal benchmark complete: {len(results)} runs, final_success={final_success}")
+    execution_success = sum(1 for item in results if item.execution_success)
+    quality_success = sum(1 for item in results if item.quality_success)
+    print(
+        "minimal benchmark complete: "
+        f"{len(results)} runs, execution_success={execution_success}, "
+        f"quality_success={quality_success}, final_success={final_success}"
+    )
     print(f"summary: {Path(args.output) / 'summary.csv'}")
 
 

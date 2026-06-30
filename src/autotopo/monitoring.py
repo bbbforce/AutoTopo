@@ -239,7 +239,7 @@ class WorkflowTracer:
                 "status": status,
                 "summary": summary,
                 "payload": jsonable(payload),
-                "artifacts": artifacts or self.collect_artifacts(payload),
+                "artifacts": artifacts if artifacts is not None else self.collect_artifacts(payload),
                 "duration_ms": duration_ms,
                 "error": error,
             }
@@ -334,6 +334,23 @@ class WorkflowTracer:
             "density.png",
             "optimization_history.png",
             "result.json",
+            "artifact_index.json",
+            "00_scientist/case_spec.json",
+            "00_scientist/case_spec_causality.json",
+            "01_validator/validation_report.json",
+            "02_planner_coder/code_plan.json",
+            "02_planner_coder/retrieved_evidence.json",
+            "03_executor/round_00/execution_report.json",
+            "03_executor/round_00/density.png",
+            "03_executor/round_00/optimization_history.png",
+            "05_evaluator/round_00/evaluator_report.json",
+            "06_summary/failure_diagnosis.json",
+            "06_summary/repair_plan.json",
+            "06_summary/repair_trace.json",
+            "06_summary/final_summary.md",
+            "result/result_index.json",
+            "result/latest_density.png",
+            "result/latest_optimization_history.png",
         ]:
             add(name)
         return list(found.values())

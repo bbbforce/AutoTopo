@@ -41,3 +41,20 @@ def test_workflow_tracer_artifact_safety(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         tracer.resolve_artifact("../outside.txt")
+
+
+def test_workflow_tracer_respects_explicit_empty_artifacts(tmp_path):
+    tracer = WorkflowTracer(run_id="run123", workflow_type="research", output_dir=tmp_path)
+    artifact_file = tmp_path / "artifact_index.json"
+    artifact_file.write_text("{}", encoding="utf-8")
+
+    event = tracer.emit(
+        stage="optimization_iteration",
+        status="running",
+        payload={"iteration": 1, "case_id": "mbb_clear"},
+        artifacts=[],
+    )
+
+    events = read_jsonl(tmp_path / "workflow_events.jsonl")
+    assert event["artifacts"] == []
+    assert events[0]["artifacts"] == []

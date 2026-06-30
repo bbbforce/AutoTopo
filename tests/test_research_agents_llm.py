@@ -7,13 +7,13 @@ import json
 import numpy as np
 import pytest
 
-from autotopo.agents.coder import GeneratedSolverDraft, select_or_generate_code
-from autotopo.agents.evaluator import evaluate_execution
+from autotopo.agents.coder import CODER_SYSTEM_PROMPT, GeneratedSolverDraft, select_or_generate_code
+from autotopo.agents.evaluator import EVALUATOR_SYSTEM_PROMPT, evaluate_execution
 from autotopo.agents.executor import execute
-from autotopo.agents.planner import plan_code
-from autotopo.agents.reviewer import review_execution_failure
-from autotopo.agents.scientist import CaseSpecDraft, build_case_spec
-from autotopo.agents.validator import validate
+from autotopo.agents.planner import PLANNER_SYSTEM_PROMPT, plan_code
+from autotopo.agents.reviewer import REVIEWER_SYSTEM_PROMPT, review_execution_failure
+from autotopo.agents.scientist import SCIENTIST_SYSTEM_PROMPT, CaseSpecDraft, build_case_spec
+from autotopo.agents.validator import VALIDATOR_SYSTEM_PROMPT, validate
 from autotopo.engines.structured_benchmarks import default_case_spec
 from autotopo.schemas import (
     AgentAuthority,
@@ -38,6 +38,94 @@ class FakeLLM:
         if self.error:
             raise self.error
         return self.result
+
+
+def test_research_agent_system_prompts_are_chinese_and_schema_bound():
+    common_sections = [
+        "## 职责",
+        "## 输入上下文",
+        "## 输出格式",
+        "## 关键判断标准",
+        "## 硬性边界",
+        "## 失败/不确定时如何输出",
+        "JSON",
+        "只输出",
+    ]
+    prompts = {
+        "scientist": (
+            SCIENTIST_SYSTEM_PROMPT,
+            [
+                "CaseSpecDraft",
+                "benchmark_type",
+                "cantilever",
+                "mbb",
+                "l_shape",
+                "null",
+                "不得发明",
+            ],
+        ),
+        "validator": (
+            VALIDATOR_SYSTEM_PROMPT,
+            [
+                "AgentDecision",
+                "fail-closed",
+                "confidence >= 0.70",
+                "overridden_failure_modes",
+                "白名单",
+            ],
+        ),
+        "planner": (
+            PLANNER_SYSTEM_PROMPT,
+            [
+                "CodePlan",
+                'engine 必须是 "python_simp_mma"',
+                'optimizer 必须是 "MMA"',
+                "allow_generated_code",
+                "template_id",
+            ],
+        ),
+        "coder": (
+            CODER_SYSTEM_PROMPT,
+            [
+                "GeneratedSolverDraft",
+                "--case-spec",
+                "--code-plan",
+                "--output-dir",
+                "execution_report.json",
+                "fallback_template",
+                "网络访问",
+                "子进程",
+            ],
+        ),
+        "reviewer": (
+            REVIEWER_SYSTEM_PROMPT,
+            [
+                "FailureDiagnosis",
+                "allowed_failure_modes",
+                "build_repair_plan",
+                "fallback_template",
+                "regenerate_code",
+            ],
+        ),
+        "evaluator": (
+            EVALUATOR_SYSTEM_PROMPT,
+            [
+                "AgentDecision",
+                "volume_fraction",
+                "不得建议或修改",
+                "灰度",
+                "棋盘格",
+                "孤岛",
+            ],
+        ),
+    }
+
+    for name, (prompt, required_terms) in prompts.items():
+        assert any("\u4e00" <= char <= "\u9fff" for char in prompt), name
+        for section in common_sections:
+            assert section in prompt, f"{name} missing {section}"
+        for term in required_terms:
+            assert term in prompt, f"{name} missing {term}"
 
 
 def test_scientist_uses_llm_draft_then_rebuilds_template_problem():

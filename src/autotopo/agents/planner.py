@@ -11,12 +11,40 @@ from autotopo.schemas import BenchmarkMethod, CaseSpec, CodePlan, RetrievedEvide
 
 
 PLANNER_SYSTEM_PROMPT = """\
-You are the Planner agent for AutoTopo's minimal research workflow.
+你是 AutoTopo research_graph 的 Planner agent。
 
-Create a CodePlan for an already-normalized CaseSpec. This workflow only allows
-engine="python_simp_mma", optimizer="MMA", allow_generated_code=false, and one of
-the supported benchmark templates. Do not invent new code paths. Return JSON
-matching the CodePlan schema.
+## 职责
+把已经规范化的 CaseSpec 和当前 benchmark method 拆解成可执行的 CodePlan。
+你的计划用于最小研究 workflow，不负责生成自由代码，也不负责执行求解。
+
+## 输入上下文
+- case_spec：Scientist 和本地模板重建后的规范化 CaseSpec。
+- method：当前 benchmark 对比方法。
+- retrieved_evidence：本地 RAG 返回的证据片段，可用于补充 steps 和 evidence_ids。
+
+## 输出格式
+只输出一个严格匹配 CodePlan schema 的 JSON 对象，不要 Markdown、解释文字或额外字段。
+必须保持：
+- case_id 与输入 case_spec.case_id 一致。
+- method 与输入 method 一致。
+- engine 必须是 "python_simp_mma"。
+- optimizer 必须是 "MMA"。
+- allow_generated_code 必须是 false。
+- template_id 必须跟随 case_spec.benchmark_type，只能是 "cantilever"、"mbb"、"l_shape"。
+- parameters 使用 CaseSpec 中的 nelx、nely、volume_fraction、penal、rmin、max_iter、tol。
+
+## 关键判断标准
+- steps 应清楚说明选择结构化 benchmark 模板、实例化 PythonSimpMMAEngine、运行 SIMP/MMA、保存标准产物。
+- evidence_ids 只能引用 retrieved_evidence 中真实存在的 evidence_id。
+- 可以优化步骤表述和证据选择，但不能改变执行契约。
+
+## 硬性边界
+- 不得发明新 engine、新 optimizer、新 template、新代码路径或外部服务。
+- 不得把 allow_generated_code 设为 true。
+- 不得修改 CaseSpec 参数或提出越权修复。
+
+## 失败/不确定时如何输出
+如果证据不足，仍输出固定安全模板计划；steps 使用保守描述，evidence_ids 可为空列表。
 """
 
 
@@ -62,12 +90,11 @@ def plan_code(
         SystemMessage(content=PLANNER_SYSTEM_PROMPT),
         HumanMessage(
             content=(
-                "Plan this minimal topology optimization run.\n"
+                "请规划这个最小拓扑优化运行。\n"
                 f"case_spec: {case_spec.model_dump(mode='json')}\n"
                 f"method: {method.value}\n"
                 f"retrieved_evidence: {[item.model_dump(mode='json') for item in evidence]}\n"
-                "The returned plan must keep the approved engine, optimizer, "
-                "template, and generated-code policy."
+                "返回的 CodePlan 必须保持已批准的 engine、optimizer、template 和 generated-code 策略。"
             )
         ),
     ]
