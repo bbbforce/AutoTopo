@@ -105,6 +105,7 @@ def run_minimal_benchmark(
     agent_authority: str = "deterministic",
     allow_generated_code: bool = False,
     generated_code_timeout_s: int = 60,
+    persist_debug_artifacts: bool = False,
 ) -> list[BenchmarkCaseResult]:
     """运行 6 case × 3 method 的最小实验。"""
 
@@ -130,6 +131,7 @@ def run_minimal_benchmark(
                 agent_authority=agent_authority,
                 allow_generated_code=allow_generated_code,
                 generated_code_timeout_s=generated_code_timeout_s,
+                persist_debug_artifacts=persist_debug_artifacts,
             )
             results.append(result)
     write_summary(results, root)
@@ -150,6 +152,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--allow-generated-code", action="store_true", help="允许 Coder 生成脚本并由 Executor 自动执行")
     parser.add_argument("--generated-code-timeout", type=int, default=60, help="生成脚本子进程超时时间（秒）")
+    parser.add_argument("--persist-debug-artifacts", action="store_true", help="保存完整 evidence、因果快照和 artifact 历史")
     args = parser.parse_args(argv)
 
     results = run_minimal_benchmark(
@@ -160,6 +163,7 @@ def main(argv: list[str] | None = None) -> None:
         agent_authority=args.agent_authority,
         allow_generated_code=args.allow_generated_code,
         generated_code_timeout_s=args.generated_code_timeout,
+        persist_debug_artifacts=args.persist_debug_artifacts,
     )
     final_success = sum(1 for item in results if item.final_success)
     execution_success = sum(1 for item in results if item.execution_success)

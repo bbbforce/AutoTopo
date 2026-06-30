@@ -199,6 +199,12 @@ python -m autotopo.experiments.run_minimal_benchmark --quick --llm-agents --prov
 
 `--llm-agents` 会让 Scientist、Planner、Reviewer 先尝试结构化 LLM 输出；任一 agent 调用失败都会回退到本地 deterministic 逻辑，且每个 case-method 会写出 `llm_agent_trace.json`。
 
+默认输出会精简中间证据全文，便于人工快速查看。需要保留完整 RAG evidence、完整 CaseSpec 因果快照和 artifact 注册历史时，加上：
+
+```bash
+python -m autotopo.experiments.run_minimal_benchmark --quick --persist-debug-artifacts
+```
+
 也可以指定输出目录：
 
 ```bash
@@ -304,24 +310,23 @@ AutoTopo/
 - `{case_id}__{method}/artifact_index.json`: 机器可读 artifact 索引，记录逻辑名称、阶段、round 和相对路径。
 - `{case_id}__{method}/llm_agent_trace.json`: 可选 LLM agent 使用情况与 fallback 原因，作为跨阶段全局审计产物保留在顶层。
 - `{case_id}__{method}/00_scientist/case_spec.json`: 本轮 CaseSpec。
-- `{case_id}__{method}/00_scientist/case_spec_causality.json`: CaseSpec 的 raw、normalized、repair 三层因果记录。
+- `{case_id}__{method}/00_scientist/case_spec_causality.json`: CaseSpec 的轻量 raw、normalized、repair 三层因果记录。
 - `{case_id}__{method}/00_scientist/case_spec_repaired.json`: 发生 bounded repair 后的最终 CaseSpec。
 - `{case_id}__{method}/01_validator/validation_report.json`: Validator 检查结果。
-- `{case_id}__{method}/01_validator/retrieved_evidence_validation.json`: Validator fail-closed 阶段证据。
 - `{case_id}__{method}/02_planner_coder/code_plan.json`: Planner/Coder 选择的执行计划。
-- `{case_id}__{method}/02_planner_coder/retrieved_evidence.json`: 本地 RAG 聚合检索证据。
-- `{case_id}__{method}/02_planner_coder/retrieved_evidence_codegen.json`: 代码生成/模板选择阶段证据。
 - `{case_id}__{method}/03_executor/round_XX/execution_report.json`: Executor 对应轮次的执行报告。
 - `{case_id}__{method}/03_executor/round_XX/run_stdout.log` 和 `run_stderr.log`: 对应轮次的执行日志。
 - `{case_id}__{method}/03_executor/round_XX/density.png`、`density.npy`、`optimization_history.csv`、`optimization_history.png`: 对应轮次的优化结果。
+- `{case_id}__{method}/result/round_XX_density.png` 和 `round_XX_optimization_history.png`: 每轮快速查看图像副本。
+- `{case_id}__{method}/result/latest_density.png` 和 `latest_optimization_history.png`: 最后一轮快速查看图像副本。
+- `{case_id}__{method}/result/result_index.json`: 每轮图像、来源路径和关键指标索引。
 - `{case_id}__{method}/04_reviewer_repair/round_XX/failure_diagnosis.json`: 执行失败诊断结果。
-- `{case_id}__{method}/04_reviewer_repair/round_XX/retrieved_evidence_execution_repair.json`: 本轮执行失败修复证据。
 - `{case_id}__{method}/05_evaluator/round_XX/evaluator_report.json`: 拓扑质量评估结果。
-- `{case_id}__{method}/05_evaluator/round_XX/retrieved_evidence_critic_repair.json`: 本轮拓扑质量修复证据。
-- `{case_id}__{method}/06_summary/retrieved_evidence.json`: 全流程去重聚合检索证据。
 - `{case_id}__{method}/06_summary/repair_plan.json`: 最终有界修复建议。
 - `{case_id}__{method}/06_summary/repair_trace.json`: bounded repair 轨迹。
 - `{case_id}__{method}/06_summary/final_summary.md`: 单个 case-method 的最终摘要。
+
+默认模式下，`code_plan.json`、`repair_plan.json` 和 `evaluator_report.json` 只保留 `evidence_ids`。使用 `--persist-debug-artifacts` 后，完整调试产物会写入 `{case_id}__{method}/debug/`，包括 `debug/evidence/...`、`debug/case_spec_causality_full.json` 和 `debug/artifact_history.jsonl`。
 
 当前本地 RAG 默认不需要安装 embedding 模型。`src/autotopo/rag/retriever.py` 提供 lexical、可选 dense 和 hybrid 检索：无 embedding 后端时自动退回关键词检索；注入 embedding model 或安装 `autotopo[rag]` 并显式配置本地模型后，可启用 dense 融合。对外仍返回统一的 `RetrievedEvidence`，其中保留旧字段并增加 `parent_id`、`chunk_id`、score breakdown 和 rerank features 以便审计。
 

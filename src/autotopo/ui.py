@@ -32,6 +32,7 @@ class RunCreateRequest(BaseModel):
     method: BenchmarkMethod = BenchmarkMethod.OURS_CORRECTIVE_RAG
     max_repair_rounds: int = Field(default=3, ge=0, le=10)
     structured_params: dict[str, Any] = Field(default_factory=dict)
+    persist_debug_artifacts: bool = False
 
 
 class RunManager:
@@ -167,6 +168,7 @@ class RunManager:
             max_repair_rounds=request.max_repair_rounds,
             use_llm_agents=request.llm_agents,
             llm_provider=request.provider if request.llm_agents else None,
+            persist_debug_artifacts=request.persist_debug_artifacts,
             tracer=tracer,
         )
         return result.model_dump(mode="json")

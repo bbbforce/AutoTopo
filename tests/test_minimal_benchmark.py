@@ -49,9 +49,6 @@ def test_run_minimal_benchmark_quick_outputs_summary(tmp_path):
         "00_scientist/case_spec.json",
         "00_scientist/case_spec_causality.json",
         "01_validator/validation_report.json",
-        "01_validator/retrieved_evidence_validation.json",
-        "02_planner_coder/retrieved_evidence.json",
-        "02_planner_coder/retrieved_evidence_codegen.json",
         "02_planner_coder/code_plan.json",
         "03_executor/round_00/execution_report.json",
         "03_executor/round_00/run_stdout.log",
@@ -65,8 +62,23 @@ def test_run_minimal_benchmark_quick_outputs_summary(tmp_path):
         "06_summary/repair_plan.json",
         "06_summary/repair_trace.json",
         "06_summary/final_summary.md",
+        "result/result_index.json",
+        "result/round_00_density.png",
+        "result/round_00_optimization_history.png",
+        "result/latest_density.png",
+        "result/latest_optimization_history.png",
     ]:
         assert (sample_dir / name).exists()
+    for name in [
+        "01_validator/retrieved_evidence_validation.json",
+        "02_planner_coder/retrieved_evidence.json",
+        "02_planner_coder/retrieved_evidence_codegen.json",
+        "05_evaluator/round_00/retrieved_evidence_critic_repair.json",
+        "06_summary/retrieved_evidence.json",
+        "06_summary/retrieved_evidence_critic_repair.json",
+        "06_summary/retrieved_evidence_execution_repair.json",
+    ]:
+        assert not (sample_dir / name).exists()
     artifact_index = json.loads((sample_dir / "artifact_index.json").read_text(encoding="utf-8"))
     assert artifact_index["artifacts"]["case_spec.json"]["path"] == "00_scientist/case_spec.json"
     assert artifact_index["artifacts"]["code_plan.json"]["path"] == "02_planner_coder/code_plan.json"
@@ -75,6 +87,11 @@ def test_run_minimal_benchmark_quick_outputs_summary(tmp_path):
         artifact_index["artifacts"]["executor_round_00_execution_report.json"]["path"]
         == "03_executor/round_00/execution_report.json"
     )
+    assert "artifact_history" not in artifact_index
+    result_index = json.loads((sample_dir / "result" / "result_index.json").read_text(encoding="utf-8"))
+    assert result_index["rounds"]
+    assert result_index["rounds"][0]["density_image"] == "result/round_00_density.png"
+    assert result_index["latest"]["density_image"] == "result/latest_density.png"
 
 
 def test_research_workflow_default_output_under_project_output(tmp_path, monkeypatch):
@@ -87,6 +104,7 @@ def test_research_workflow_default_output_under_project_output(tmp_path, monkeyp
     assert tmp_path / Path(result.output_dir) == expected
     assert (expected / "00_scientist" / "case_spec.json").exists()
     assert (expected / "artifact_index.json").exists()
+    assert (expected / "result" / "latest_density.png").exists()
 
 
 def test_research_workflow_tracer_records_agent_timeline(tmp_path):
@@ -117,6 +135,7 @@ def test_research_workflow_tracer_records_agent_timeline(tmp_path):
     assert all(event["artifacts"] == [] for event in progress_events)
     assert (tmp_path / "00_scientist" / "case_spec.json").exists()
     assert tracer.resolve_artifact("00_scientist/case_spec.json").exists()
+    assert tracer.resolve_artifact("result/latest_density.png").exists()
     assert (tmp_path / "workflow_events.jsonl").exists()
 
 
@@ -133,9 +152,15 @@ def test_research_workflow_writes_case_spec_causality_after_repair(tmp_path, mon
             stderr_path=str(Path(output_dir) / "run_stderr.log"),
             compliance=1.0,
             converged=True,
+            files={
+                "density_image": str(Path(output_dir) / "density.png"),
+                "optimization_history_image": str(Path(output_dir) / "optimization_history.png"),
+            },
         )
         Path(report.stdout_path).write_text("", encoding="utf-8")
         Path(report.stderr_path).write_text("", encoding="utf-8")
+        (Path(output_dir) / "density.png").write_bytes(b"density")
+        (Path(output_dir) / "optimization_history.png").write_bytes(b"history")
         (Path(output_dir) / "execution_report.json").write_text(
             json.dumps(report.model_dump(mode="json"), ensure_ascii=False),
             encoding="utf-8",
@@ -215,47 +240,28 @@ def test_research_workflow_writes_case_spec_causality_after_repair(tmp_path, mon
     assert repaired["penal"] == 4.0
     assert set(causality) >= {"raw", "normalized", "repair"}
     assert causality["raw"]["input_type"] == "case_spec"
-    assert causality["raw"]["case_spec"]["penal"] == 3.0
-    assert causality["normalized"]["case_spec"]["penal"] == 3.0
-    assert causality["repair"]["final_case_spec"]["penal"] == 4.0
+    assert "case_spec" not in causality["raw"]
+    assert causality["normalized"]["artifact"] == "00_scientist/case_spec.json"
+    assert "case_spec" not in causality["normalized"]
+    assert causality["repair"]["final_case_spec_artifact"] == "00_scientist/case_spec.json"
     assert causality["repair"]["applications"][0]["repair_plan"]["parameter_updates"] == {"penal": 4.0}
-    assert causality["repair"]["applications"][0]["repaired_case_spec"]["penal"] == 4.0
+    assert "raw_case_spec" not in causality["repair"]["applications"][0]
+    assert "repaired_case_spec" not in causality["repair"]["applications"][0]
     artifact_index = json.loads((tmp_path / "artifact_index.json").read_text(encoding="utf-8"))
     assert artifact_index["artifacts"]["case_spec_repaired.json"]["path"] == "00_scientist/case_spec_repaired.json"
-    round_00_evidence_file = json.loads(
-        (tmp_path / "05_evaluator" / "round_00" / "retrieved_evidence_critic_repair.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    round_01_evidence_file = json.loads(
-        (tmp_path / "05_evaluator" / "round_01" / "retrieved_evidence_critic_repair.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    summary_evidence = json.loads(
-        (tmp_path / "06_summary" / "retrieved_evidence_critic_repair.json").read_text(encoding="utf-8")
-    )
-    planner_evidence = json.loads(
-        (tmp_path / "02_planner_coder" / "retrieved_evidence.json").read_text(encoding="utf-8")
-    )
-    summary_all_evidence = json.loads((tmp_path / "06_summary" / "retrieved_evidence.json").read_text(encoding="utf-8"))
-    assert [item["evidence_id"] for item in round_00_evidence_file] == [round_00_evidence.evidence_id]
-    assert [item["evidence_id"] for item in round_01_evidence_file] == [round_01_evidence.evidence_id]
-    assert [item["evidence_id"] for item in summary_evidence] == [
-        round_00_evidence.evidence_id,
-        round_01_evidence.evidence_id,
-    ]
-    assert round_00_evidence.evidence_id not in {item["evidence_id"] for item in planner_evidence}
-    assert round_01_evidence.evidence_id not in {item["evidence_id"] for item in planner_evidence}
-    assert {round_00_evidence.evidence_id, round_01_evidence.evidence_id} <= {
-        item["evidence_id"] for item in summary_all_evidence
-    }
+    assert not (tmp_path / "05_evaluator" / "round_00" / "retrieved_evidence_critic_repair.json").exists()
+    assert not (tmp_path / "05_evaluator" / "round_01" / "retrieved_evidence_critic_repair.json").exists()
+    assert not (tmp_path / "06_summary" / "retrieved_evidence_critic_repair.json").exists()
+    assert not (tmp_path / "02_planner_coder" / "retrieved_evidence.json").exists()
+    assert not (tmp_path / "06_summary" / "retrieved_evidence.json").exists()
+    assert (tmp_path / "result" / "round_00_density.png").exists()
+    assert (tmp_path / "result" / "round_01_density.png").exists()
 
 
 def test_artifact_index_history_keeps_unique_registrations(tmp_path):
     from autotopo.research_graph import _ResearchArtifactLayout
 
-    layout = _ResearchArtifactLayout(tmp_path)
+    layout = _ResearchArtifactLayout(tmp_path, persist_debug_artifacts=True)
     layout.write_json(tmp_path / "artifact.json", {"value": 1}, stage="summary")
     layout.write_json(tmp_path / "artifact.json", {"value": 2}, stage="summary")
     layout.write_index()
@@ -263,6 +269,72 @@ def test_artifact_index_history_keeps_unique_registrations(tmp_path):
     artifact_index = json.loads((tmp_path / "artifact_index.json").read_text(encoding="utf-8"))
     matching = [item for item in artifact_index["artifact_history"] if item["name"] == "artifact.json"]
     assert len(matching) == 1
+
+
+def test_research_workflow_debug_artifacts_persist_full_evidence_and_history(tmp_path, monkeypatch):
+    case = default_case_spec("cantilever", quick=True)
+    debug_evidence = RetrievedEvidence(
+        evidence_id="debug_quality_rule",
+        source="failure_kb.md",
+        content="调试模式保存完整检索证据。",
+        score=1.0,
+        kind="quality",
+    )
+
+    def fake_execute(case_spec, code_plan, output_dir, **_kwargs):
+        report = ExecutionReport(
+            case_id=case_spec.case_id,
+            method=code_plan.method,
+            success=True,
+            output_dir=str(output_dir),
+            stdout_path=str(Path(output_dir) / "run_stdout.log"),
+            stderr_path=str(Path(output_dir) / "run_stderr.log"),
+            compliance=1.0,
+            converged=True,
+            files={
+                "density_image": str(Path(output_dir) / "density.png"),
+                "optimization_history_image": str(Path(output_dir) / "optimization_history.png"),
+            },
+        )
+        Path(report.stdout_path).write_text("", encoding="utf-8")
+        Path(report.stderr_path).write_text("", encoding="utf-8")
+        (Path(output_dir) / "density.png").write_bytes(b"density")
+        (Path(output_dir) / "optimization_history.png").write_bytes(b"history")
+        (Path(output_dir) / "execution_report.json").write_text(
+            json.dumps(report.model_dump(mode="json"), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return report
+
+    def fake_evaluate(case_spec, _execution_report, **_kwargs):
+        report = EvaluatorReport(
+            case_id=case_spec.case_id,
+            success=True,
+            has_quality_failure=False,
+            evidence_ids=[debug_evidence.evidence_id],
+        )
+        return report, None, [debug_evidence]
+
+    monkeypatch.setattr(research_graph, "execute", fake_execute)
+    monkeypatch.setattr(research_graph, "evaluate_execution", fake_evaluate)
+
+    run_research_workflow(
+        case,
+        output_dir=tmp_path,
+        method=BenchmarkMethod.OURS_CORRECTIVE_RAG,
+        quick=True,
+        max_repair_rounds=0,
+        persist_debug_artifacts=True,
+    )
+
+    assert (tmp_path / "debug" / "evidence" / "05_evaluator" / "round_00_retrieved_evidence_critic_repair.json").exists()
+    assert (tmp_path / "debug" / "evidence" / "06_summary" / "retrieved_evidence.json").exists()
+    assert (tmp_path / "debug" / "case_spec_causality_full.json").exists()
+    assert (tmp_path / "debug" / "artifact_history.jsonl").exists()
+    full_causality = json.loads((tmp_path / "debug" / "case_spec_causality_full.json").read_text(encoding="utf-8"))
+    assert full_causality["raw"]["case_spec"]["penal"] == 3.0
+    artifact_index = json.loads((tmp_path / "artifact_index.json").read_text(encoding="utf-8"))
+    assert "artifact_history" in artifact_index
 
 
 def test_write_summary_splits_execution_and_quality_success(tmp_path):

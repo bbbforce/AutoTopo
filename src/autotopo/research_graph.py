@@ -7,6 +7,7 @@ Scientist → Validator → Planner → Coder → Executor → Reviewer/Evaluato
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -70,18 +71,22 @@ class _ResearchArtifactLayout:
         "reviewer_repair": "04_reviewer_repair",
         "evaluator": "05_evaluator",
         "summary": "06_summary",
+        "result": "result",
+        "debug": "debug",
         "global": "",
     }
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, persist_debug_artifacts: bool = False) -> None:
         self.root = root
+        self.persist_debug_artifacts = persist_debug_artifacts
         self.root.mkdir(parents=True, exist_ok=True)
         self.index: dict[str, Any] = {
             "schema_version": "research_artifact_layout_v1",
             "artifacts": {},
-            "artifact_history": [],
             "stages": {},
         }
+        if self.persist_debug_artifacts:
+            self.index["artifact_history"] = []
         self._history_seen: set[tuple[str, str, str, int | None]] = set()
 
     def stage_dir(self, stage: str) -> Path:
@@ -92,6 +97,13 @@ class _ResearchArtifactLayout:
 
     def round_dir(self, stage: str, repair_iteration: int) -> Path:
         directory = self.stage_dir(stage) / f"round_{repair_iteration:02d}"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def debug_dir(self, *parts: str | Path) -> Path:
+        directory = self.stage_dir("debug")
+        for part in parts:
+            directory = directory / part
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
@@ -118,7 +130,7 @@ class _ResearchArtifactLayout:
             entry["round"] = repair_iteration
         self.index["artifacts"][name] = entry
         history_key = (name, entry["path"], stage, repair_iteration)
-        if history_key not in self._history_seen:
+        if self.persist_debug_artifacts and history_key not in self._history_seen:
             self._history_seen.add(history_key)
             self.index["artifact_history"].append({"name": name, **entry})
 
@@ -134,13 +146,42 @@ class _ResearchArtifactLayout:
         _write_json(path, payload)
         self.register(path, logical_name=logical_name, stage=stage, repair_iteration=repair_iteration)
 
+    def write_debug_json(
+        self,
+        relative_path: str | Path,
+        payload: Any,
+        *,
+        logical_name: str | None = None,
+        stage: str = "debug",
+        repair_iteration: int | None = None,
+    ) -> Path | None:
+        if not self.persist_debug_artifacts:
+            return None
+        path = self.debug_dir() / relative_path
+        self.write_json(
+            path,
+            payload,
+            logical_name=logical_name,
+            stage=stage,
+            repair_iteration=repair_iteration,
+        )
+        return path
+
     def write_index(self) -> None:
+        if self.persist_debug_artifacts:
+            history_path = self.debug_dir() / "artifact_history.jsonl"
+            self.register(history_path, stage="debug")
+            lines = [
+                json.dumps(item, ensure_ascii=False)
+                for item in self.index.get("artifact_history", [])
+            ]
+            history_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         index_path = self.root / "artifact_index.json"
         self.register(index_path, stage="global")
         _write_json(index_path, self.index)
 
 
-def _case_spec_input_causality(case_spec: CaseSpec, *, quick: bool) -> dict[str, Any]:
+def _case_spec_input_causality_full(case_spec: CaseSpec, *, quick: bool) -> dict[str, Any]:
     spec_dump = case_spec.model_dump(mode="json")
     return {
         "raw": {
@@ -150,14 +191,80 @@ def _case_spec_input_causality(case_spec: CaseSpec, *, quick: bool) -> dict[str,
             "source": "case_spec_input",
         },
         "normalized": {
-            "artifact": "case_spec.json",
+            "artifact": "00_scientist/case_spec.json",
             "case_spec": spec_dump,
         },
         "repair": {
-            "artifact": "case_spec_repaired.json",
+            "artifact": "00_scientist/case_spec_repaired.json",
             "applications": [],
             "final_case_spec": spec_dump,
         },
+    }
+
+
+def _case_spec_scalar_summary(case_spec: CaseSpec) -> dict[str, Any]:
+    return {
+        "case_id": case_spec.case_id,
+        "benchmark_type": case_spec.benchmark_type.value,
+        "variant": case_spec.variant,
+        "nelx": case_spec.nelx,
+        "nely": case_spec.nely,
+        "volume_fraction": case_spec.volume_fraction,
+        "penal": case_spec.penal,
+        "rmin": case_spec.rmin,
+        "max_iter": case_spec.max_iter,
+        "tol": case_spec.tol,
+        "optimizer": case_spec.optimizer,
+    }
+
+
+def _compact_case_spec_causality(full_causality: dict[str, Any], case_spec: CaseSpec) -> dict[str, Any]:
+    raw_full = full_causality.get("raw", {})
+    raw: dict[str, Any] = {
+        "input_type": raw_full.get("input_type", "case_spec"),
+        "quick": raw_full.get("quick"),
+        "source": raw_full.get("source", "case_spec_input"),
+        "case_id": case_spec.case_id,
+        "benchmark_type": case_spec.benchmark_type.value,
+    }
+    for key in ("natural_language", "structured_params", "llm_requested"):
+        if key in raw_full:
+            raw[key] = raw_full[key]
+    if raw_full.get("case_spec_draft") is not None:
+        raw["case_spec_draft_present"] = True
+
+    compact = {
+        "raw": raw,
+        "normalized": {
+            "artifact": "00_scientist/case_spec.json",
+            "parameters": _case_spec_scalar_summary(case_spec),
+        },
+        "repair": {
+            "artifact": "00_scientist/case_spec_repaired.json",
+            "applications": [],
+            "final_case_spec_artifact": "00_scientist/case_spec.json",
+        },
+    }
+    return compact
+
+
+def _repair_application_summary(
+    raw_case_spec: CaseSpec,
+    repaired_case_spec: CaseSpec,
+    repair_plan: RepairPlan,
+) -> dict[str, Any]:
+    parameter_changes = {}
+    for key, new_value in repair_plan.parameter_updates.items():
+        parameter_changes[key] = {
+            "before": getattr(raw_case_spec, key, None),
+            "after": new_value,
+        }
+    return {
+        "repair_iteration": repair_plan.repair_iteration,
+        "case_spec_before_artifact": "00_scientist/case_spec.json",
+        "case_spec_after_artifact": "00_scientist/case_spec_repaired.json",
+        "repair_plan": repair_plan.model_dump(mode="json"),
+        "parameter_changes": parameter_changes,
     }
 
 
@@ -166,19 +273,34 @@ def _write_case_spec_artifacts(
     case_spec: CaseSpec,
     causality: dict[str, Any],
     *,
+    full_causality: dict[str, Any] | None = None,
     repaired: bool = False,
 ) -> None:
     output_dir = layout.stage_dir("scientist")
     spec_dump = case_spec.model_dump(mode="json")
-    causality.setdefault("normalized", {})["artifact"] = "case_spec.json"
+    causality.setdefault("normalized", {})["artifact"] = "00_scientist/case_spec.json"
     repair_layer = causality.setdefault("repair", {})
-    repair_layer.setdefault("artifact", "case_spec_repaired.json")
+    repair_layer.setdefault("artifact", "00_scientist/case_spec_repaired.json")
     repair_layer.setdefault("applications", [])
-    repair_layer["final_case_spec"] = spec_dump
+    repair_layer["final_case_spec_artifact"] = "00_scientist/case_spec.json"
+    if full_causality is not None:
+        full_causality.setdefault("normalized", {})["artifact"] = "00_scientist/case_spec.json"
+        full_causality.setdefault("normalized", {})["case_spec"] = spec_dump
+        full_repair = full_causality.setdefault("repair", {})
+        full_repair["artifact"] = "00_scientist/case_spec_repaired.json"
+        full_repair.setdefault("applications", [])
+        full_repair["final_case_spec"] = spec_dump
     layout.write_json(output_dir / "case_spec.json", spec_dump, stage="scientist")
     if repaired:
         layout.write_json(output_dir / "case_spec_repaired.json", spec_dump, stage="scientist")
     layout.write_json(output_dir / "case_spec_causality.json", causality, stage="scientist")
+    if full_causality is not None:
+        layout.write_debug_json(
+            "case_spec_causality_full.json",
+            full_causality,
+            logical_name="case_spec_causality_full.json",
+            stage="scientist",
+        )
 
 
 def _apply_repair_and_record_case_spec(
@@ -186,13 +308,17 @@ def _apply_repair_and_record_case_spec(
     case_spec: CaseSpec,
     repair_plan: RepairPlan,
     causality: dict[str, Any],
+    full_causality: dict[str, Any],
 ) -> CaseSpec:
     raw_case_spec = case_spec
     repaired = apply_repair_plan(case_spec, repair_plan)
     repaired = repaired.model_copy(update={"problem": case_to_problem(repaired)})
     repair_layer = causality.setdefault("repair", {})
     applications = repair_layer.setdefault("applications", [])
-    applications.append(
+    applications.append(_repair_application_summary(raw_case_spec, repaired, repair_plan))
+    full_repair_layer = full_causality.setdefault("repair", {})
+    full_applications = full_repair_layer.setdefault("applications", [])
+    full_applications.append(
         {
             "repair_iteration": repair_plan.repair_iteration,
             "raw_case_spec": raw_case_spec.model_dump(mode="json"),
@@ -200,7 +326,7 @@ def _apply_repair_and_record_case_spec(
             "repaired_case_spec": repaired.model_dump(mode="json"),
         }
     )
-    _write_case_spec_artifacts(layout, repaired, causality, repaired=True)
+    _write_case_spec_artifacts(layout, repaired, causality, full_causality=full_causality, repaired=True)
     return repaired
 
 
@@ -275,6 +401,189 @@ def _register_execution_artifacts(
     for value in execution_report.files.values():
         if isinstance(value, str) and value:
             layout.register(_path_from_report(value, execution_dir), stage="executor", repair_iteration=repair_iteration)
+
+
+def _debug_evidence_path(stage: str, filename: str, repair_iteration: int | None = None) -> Path:
+    if repair_iteration is None:
+        return Path("evidence") / _ResearchArtifactLayout.STAGE_DIRS[stage] / filename
+    return Path("evidence") / _ResearchArtifactLayout.STAGE_DIRS[stage] / f"round_{repair_iteration:02d}_{filename}"
+
+
+def _write_debug_evidence(
+    layout: _ResearchArtifactLayout,
+    stage: str,
+    filename: str,
+    evidence: list[RetrievedEvidence],
+    *,
+    repair_iteration: int | None = None,
+    logical_name: str | None = None,
+) -> None:
+    layout.write_debug_json(
+        _debug_evidence_path(stage, filename, repair_iteration),
+        _model_dump(evidence),
+        logical_name=logical_name or filename,
+        stage=stage,
+        repair_iteration=repair_iteration,
+    )
+
+
+def _execution_summary_payload(execution_report: ExecutionReport) -> dict[str, Any]:
+    return {
+        "case_id": execution_report.case_id,
+        "method": execution_report.method.value,
+        "success": execution_report.success,
+        "output_dir": execution_report.output_dir,
+        "error_type": execution_report.error_type,
+        "iterations": execution_report.iterations,
+        "converged": execution_report.converged,
+        "compliance": execution_report.compliance,
+        "volume_fraction": execution_report.volume_fraction,
+        "files": execution_report.files,
+    }
+
+
+def _evaluator_summary_payload(
+    evaluator_report: EvaluatorReport,
+    repair_plan: RepairPlan | None,
+    *,
+    evidence_count: int,
+) -> dict[str, Any]:
+    return {
+        "case_id": evaluator_report.case_id,
+        "success": evaluator_report.success,
+        "has_quality_failure": evaluator_report.has_quality_failure,
+        "failure_modes": [mode.value for mode in evaluator_report.failure_modes],
+        "compliance": evaluator_report.compliance,
+        "volume_error": evaluator_report.volume_error,
+        "grayness_index": evaluator_report.grayness_index,
+        "checkerboard_score": evaluator_report.checkerboard_score,
+        "connectivity_score": evaluator_report.connectivity_score,
+        "converged": evaluator_report.converged,
+        "evidence_count": evidence_count,
+        "evidence_ids": evaluator_report.evidence_ids,
+        "repair_plan": None if repair_plan is None else {
+            "should_repair": repair_plan.should_repair,
+            "repair_iteration": repair_plan.repair_iteration,
+            "repair_type": repair_plan.repair_type,
+            "parameter_updates": repair_plan.parameter_updates,
+            "evidence_ids": repair_plan.evidence_ids,
+        },
+    }
+
+
+def _repair_plan_summary_payload(repair_plan: RepairPlan) -> dict[str, Any]:
+    return {
+        "case_id": repair_plan.case_id,
+        "should_repair": repair_plan.should_repair,
+        "repair_iteration": repair_plan.repair_iteration,
+        "repair_type": repair_plan.repair_type,
+        "parameter_updates": repair_plan.parameter_updates,
+        "evidence_ids": repair_plan.evidence_ids,
+        "risk_level": repair_plan.risk_level,
+    }
+
+
+def _result_source_image(execution_report: ExecutionReport, key: str, default_name: str) -> Path:
+    execution_dir = Path(execution_report.output_dir)
+    value = execution_report.files.get(key) or str(execution_dir / default_name)
+    return _path_from_report(value, execution_dir)
+
+
+def _copy_result_image(
+    layout: _ResearchArtifactLayout,
+    source: Path,
+    filename: str,
+    *,
+    repair_iteration: int | None = None,
+) -> str | None:
+    if not source.exists() or not source.is_file():
+        return None
+    target = layout.stage_dir("result") / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    layout.register(target, logical_name=filename, stage="result", repair_iteration=repair_iteration)
+    return layout._relative_path(target)
+
+
+def _write_result_gallery_round(
+    layout: _ResearchArtifactLayout,
+    execution_report: ExecutionReport,
+    *,
+    repair_iteration: int,
+) -> dict[str, Any]:
+    density_source = _result_source_image(execution_report, "density_image", "density.png")
+    history_source = _result_source_image(execution_report, "optimization_history_image", "optimization_history.png")
+    entry: dict[str, Any] = {
+        "round": repair_iteration,
+        "source_output_dir": layout._relative_path(Path(execution_report.output_dir)),
+        "success": execution_report.success,
+        "execution_success": execution_report.success,
+        "compliance": execution_report.compliance,
+        "volume_fraction": execution_report.volume_fraction,
+        "converged": execution_report.converged,
+        "source_density_image": layout._relative_path(density_source),
+        "source_optimization_history": layout._relative_path(history_source),
+        "density_image": _copy_result_image(
+            layout,
+            density_source,
+            f"round_{repair_iteration:02d}_density.png",
+            repair_iteration=repair_iteration,
+        ),
+        "optimization_history_image": _copy_result_image(
+            layout,
+            history_source,
+            f"round_{repair_iteration:02d}_optimization_history.png",
+            repair_iteration=repair_iteration,
+        ),
+    }
+    return entry
+
+
+def _update_result_gallery_round(
+    result_rounds: list[dict[str, Any]],
+    *,
+    repair_iteration: int,
+    evaluator_report: EvaluatorReport,
+) -> None:
+    for entry in reversed(result_rounds):
+        if entry.get("round") != repair_iteration:
+            continue
+        entry["quality_success"] = evaluator_report.success
+        entry["success"] = bool(entry.get("execution_success")) and evaluator_report.success
+        entry["compliance"] = evaluator_report.compliance if evaluator_report.compliance is not None else entry.get("compliance")
+        entry["volume_error"] = evaluator_report.volume_error
+        entry["grayness_index"] = evaluator_report.grayness_index
+        entry["checkerboard_score"] = evaluator_report.checkerboard_score
+        entry["connectivity_score"] = evaluator_report.connectivity_score
+        entry["converged"] = evaluator_report.converged
+        break
+
+
+def _write_result_gallery_index(layout: _ResearchArtifactLayout, result_rounds: list[dict[str, Any]]) -> None:
+    result_dir = layout.stage_dir("result")
+    latest: dict[str, Any] = {}
+    if result_rounds:
+        final_round = result_rounds[-1]
+        if final_round.get("density_image"):
+            source = layout.root / final_round["density_image"]
+            latest_path = _copy_result_image(layout, source, "latest_density.png")
+            latest["source_density_image"] = final_round["density_image"]
+            latest["density_image"] = latest_path
+        if final_round.get("optimization_history_image"):
+            source = layout.root / final_round["optimization_history_image"]
+            latest_path = _copy_result_image(layout, source, "latest_optimization_history.png")
+            latest["source_optimization_history_image"] = final_round["optimization_history_image"]
+            latest["optimization_history_image"] = latest_path
+    layout.write_json(
+        result_dir / "result_index.json",
+        {
+            "schema_version": "research_result_index_v1",
+            "rounds": result_rounds,
+            "latest": latest,
+        },
+        logical_name="result_index.json",
+        stage="result",
+    )
 
 
 def _empty_diagnosis(case_spec: CaseSpec) -> FailureDiagnosis:
@@ -356,6 +665,7 @@ def run_research_workflow(
     agent_authority: AgentAuthority | str = AgentAuthority.DETERMINISTIC,
     allow_generated_code: bool = False,
     generated_code_timeout_s: int = 60,
+    persist_debug_artifacts: bool = False,
     tracer: Any | None = None,
 ) -> BenchmarkCaseResult:
     """运行单个 case-method 的最小研究 workflow。
@@ -412,9 +722,9 @@ def run_research_workflow(
     try:
         if isinstance(case_or_text, CaseSpec):
             case_spec = case_or_text
-            case_spec_causality = _case_spec_input_causality(case_spec, quick=quick)
+            case_spec_causality_full = _case_spec_input_causality_full(case_spec, quick=quick)
         else:
-            case_spec, case_spec_causality = build_case_spec_with_causality(
+            case_spec, case_spec_causality_full = build_case_spec_with_causality(
                 case_or_text,
                 structured_params=structured_params,
                 quick=quick,
@@ -431,12 +741,18 @@ def run_research_workflow(
         if output_dir is None:
             output_dir = Path("output") / "research_graph" / f"{case_spec.case_id}__{method.value}"
         out = Path(output_dir)
-        layout = _ResearchArtifactLayout(out)
-        case_spec_causality["normalized"] = {
-            "artifact": "case_spec.json",
+        layout = _ResearchArtifactLayout(out, persist_debug_artifacts=persist_debug_artifacts)
+        case_spec_causality = _compact_case_spec_causality(case_spec_causality_full, case_spec)
+        case_spec_causality_full["normalized"] = {
+            "artifact": "00_scientist/case_spec.json",
             "case_spec": case_spec.model_dump(mode="json"),
         }
-        _write_case_spec_artifacts(layout, case_spec, case_spec_causality)
+        _write_case_spec_artifacts(
+            layout,
+            case_spec,
+            case_spec_causality,
+            full_causality=case_spec_causality_full,
+        )
         layout.write_json(out / "llm_agent_trace.json", llm_agent_trace, stage="global")
     except Exception as exc:
         _fail(scientist_token, exc)
@@ -445,8 +761,10 @@ def run_research_workflow(
         scientist_token,
         summary="Scientist 完成 CaseSpec",
         payload={
-            "case_spec": case_spec.model_dump(mode="json"),
-            "llm_agent_trace": llm_agent_trace,
+            "case_id": case_spec.case_id,
+            "benchmark_type": case_spec.benchmark_type.value,
+            "parameters": _case_spec_scalar_summary(case_spec),
+            "llm_trace_count": len(llm_agent_trace),
         },
     )
 
@@ -461,6 +779,7 @@ def run_research_workflow(
     final_evaluator: EvaluatorReport | None = None
     final_diagnosis: FailureDiagnosis | None = None
     first_pass_success = False
+    result_rounds: list[dict[str, Any]] = []
 
     validator_token = _start(
         "validator",
@@ -496,10 +815,11 @@ def run_research_workflow(
             validation_report.model_dump(mode="json"),
             stage="validator",
         )
-        layout.write_json(
-            validator_dir / "retrieved_evidence_validation.json",
-            _model_dump(validation_evidence),
-            stage="validator",
+        _write_debug_evidence(
+            layout,
+            "validator",
+            "retrieved_evidence_validation.json",
+            validation_evidence,
         )
         layout.write_json(out / "llm_agent_trace.json", llm_agent_trace, stage="global")
     except Exception as exc:
@@ -508,7 +828,15 @@ def run_research_workflow(
     _complete(
         validator_token,
         summary="Validator 检查完成",
-        payload=validation_report.model_dump(mode="json"),
+        payload={
+            "case_id": validation_report.case_id,
+            "is_valid": validation_report.is_valid,
+            "local_is_valid": validation_report.local_is_valid,
+            "failure_modes": [mode.value for mode in validation_report.failure_modes],
+            "severity": validation_report.severity.value,
+            "evidence_count": len(validation_evidence),
+            "evidence_ids": validation_report.evidence_ids,
+        },
     )
     if not validation_report.is_valid:
         code_plan = CodePlan(
@@ -529,19 +857,21 @@ def run_research_workflow(
         reviewer_dir = layout.round_dir("reviewer_repair", 0)
         evaluator_dir = layout.round_dir("evaluator", 0)
         summary_dir = layout.stage_dir("summary")
-        layout.write_json(planner_dir / "retrieved_evidence_codegen.json", [], stage="planner_coder")
-        layout.write_json(planner_dir / "retrieved_evidence.json", _model_dump(all_evidence), stage="planner_coder")
+        _write_debug_evidence(layout, "planner_coder", "retrieved_evidence_codegen.json", [])
+        _write_debug_evidence(layout, "planner_coder", "retrieved_evidence.json", all_evidence)
         layout.write_json(planner_dir / "code_plan.json", code_plan.model_dump(mode="json"), stage="planner_coder")
-        layout.write_json(
-            reviewer_dir / "retrieved_evidence_execution_repair.json",
+        _write_debug_evidence(
+            layout,
+            "reviewer_repair",
+            "retrieved_evidence_execution_repair.json",
             [],
-            stage="reviewer_repair",
             repair_iteration=0,
         )
-        layout.write_json(
-            evaluator_dir / "retrieved_evidence_critic_repair.json",
+        _write_debug_evidence(
+            layout,
+            "evaluator",
+            "retrieved_evidence_critic_repair.json",
             [],
-            stage="evaluator",
             repair_iteration=0,
         )
         final_diagnosis = FailureDiagnosis(
@@ -586,9 +916,22 @@ def run_research_workflow(
         final_summary_path = summary_dir / "final_summary.md"
         _write_final_summary(final_summary_path, result, repair_trace)
         layout.register(final_summary_path, stage="summary")
+        _write_result_gallery_index(layout, result_rounds)
         layout.write_index()
         summary_token = _start("final_summary", "Reporter", "保存研究 workflow 摘要")
-        _complete(summary_token, summary="研究 workflow fail-closed 完成", payload=result.model_dump(mode="json"))
+        _complete(
+            summary_token,
+            summary="研究 workflow fail-closed 完成",
+            payload={
+                "case_id": result.case_id,
+                "method": result.method.value,
+                "final_success": result.final_success,
+                "execution_success": result.execution_success,
+                "quality_success": result.quality_success,
+                "repair_iterations": result.repair_iterations,
+                "output_dir": result.output_dir,
+            },
+        )
         return result
 
     planner_token = _start(
@@ -608,12 +951,8 @@ def run_research_workflow(
         if method in {BenchmarkMethod.BASELINE_NAIVE_RAG, BenchmarkMethod.OURS_CORRECTIVE_RAG}:
             codegen_evidence = retrieve_for_codegen(case_spec, retriever)
             _extend_unique_evidence(all_evidence, codegen_evidence)
-        layout.write_json(
-            planner_dir / "retrieved_evidence_codegen.json",
-            _model_dump(codegen_evidence),
-            stage="planner_coder",
-        )
-        layout.write_json(planner_dir / "retrieved_evidence.json", _model_dump(all_evidence), stage="planner_coder")
+        _write_debug_evidence(layout, "planner_coder", "retrieved_evidence_codegen.json", codegen_evidence)
+        _write_debug_evidence(layout, "planner_coder", "retrieved_evidence.json", all_evidence)
         code_plan = select_or_generate_code(
             plan_code(
                 case_spec,
@@ -649,9 +988,15 @@ def run_research_workflow(
         planner_token,
         summary="Planner/Coder 计划完成",
         payload={
-            "code_plan": code_plan.model_dump(mode="json"),
+            "case_id": code_plan.case_id,
+            "method": code_plan.method.value,
+            "engine": code_plan.engine,
+            "template_id": code_plan.template_id,
+            "execution_mode": code_plan.execution_mode,
+            "generated_code": bool(code_plan.generated_code_path),
+            "evidence_ids": code_plan.evidence_ids,
             "evidence_count": len(codegen_evidence),
-            "llm_agent_trace": llm_agent_trace,
+            "llm_trace_count": len(llm_agent_trace),
         },
     )
 
@@ -718,6 +1063,13 @@ def run_research_workflow(
                 progress_callback=_progress_event,
             )
             _register_execution_artifacts(layout, final_execution, repair_iteration=repair_iteration)
+            result_rounds.append(
+                _write_result_gallery_round(
+                    layout,
+                    final_execution,
+                    repair_iteration=repair_iteration,
+                )
+            )
             if code_plan.execution_mode == "generated_script":
                 llm_agent_trace.append(
                     {
@@ -738,7 +1090,7 @@ def run_research_workflow(
         _complete(
             executor_token,
             summary=f"Executor 第 {repair_iteration} 轮完成",
-            payload=final_execution.model_dump(mode="json"),
+            payload=_execution_summary_payload(final_execution),
         )
         if repair_iteration == 0:
             first_pass_success = final_execution.success
@@ -770,10 +1122,14 @@ def run_research_workflow(
                 reviewer_token,
                 summary="Reviewer 诊断完成",
                 payload={
-                    "failure_diagnosis": final_diagnosis.model_dump(mode="json"),
-                    "repair_plan": repair_plan.model_dump(mode="json"),
+                    "case_id": final_diagnosis.case_id,
+                    "has_failure": final_diagnosis.has_failure,
+                    "failure_modes": [mode.value for mode in final_diagnosis.failure_modes],
+                    "severity": final_diagnosis.severity.value,
+                    "repair_plan": _repair_plan_summary_payload(repair_plan),
                     "evidence_count": len(evidence),
-                    "llm_agent_trace": llm_agent_trace,
+                    "evidence_ids": final_diagnosis.evidence_ids,
+                    "llm_trace_count": len(llm_agent_trace),
                 },
             )
             final_repair_plan = repair_plan
@@ -786,11 +1142,12 @@ def run_research_workflow(
                 stage="reviewer_repair",
                 repair_iteration=repair_iteration,
             )
-            layout.write_json(
-                reviewer_dir / "retrieved_evidence_execution_repair.json",
-                _model_dump(evidence),
+            _write_debug_evidence(
+                layout,
+                "reviewer_repair",
+                "retrieved_evidence_execution_repair.json",
+                evidence,
                 logical_name=f"reviewer_round_{repair_iteration:02d}_retrieved_evidence_execution_repair.json",
-                stage="reviewer_repair",
                 repair_iteration=repair_iteration,
             )
             layout.write_json(
@@ -802,7 +1159,13 @@ def run_research_workflow(
             if method == BenchmarkMethod.OURS_CORRECTIVE_RAG and repair_plan.should_repair:
                 repair_token = _start("repair", "Repair", "应用执行失败修复计划")
                 repair_trace.append(repair_plan)
-                case_spec = _apply_repair_and_record_case_spec(layout, case_spec, repair_plan, case_spec_causality)
+                case_spec = _apply_repair_and_record_case_spec(
+                    layout,
+                    case_spec,
+                    repair_plan,
+                    case_spec_causality,
+                    case_spec_causality_full,
+                )
                 layout.write_json(
                     reviewer_dir / "repair_trace.json",
                     _model_dump(repair_trace),
@@ -813,7 +1176,7 @@ def run_research_workflow(
                 _complete(
                     repair_token,
                     summary="执行失败修复计划已应用",
-                    payload=repair_plan.model_dump(mode="json"),
+                    payload=_repair_plan_summary_payload(repair_plan),
                 )
                 continue
             if (
@@ -851,7 +1214,7 @@ def run_research_workflow(
                     stage="reviewer_repair",
                     repair_iteration=repair_iteration,
                 )
-                _complete(repair_token, summary="已回退到模板执行", payload=fallback_plan.model_dump(mode="json"))
+                _complete(repair_token, summary="已回退到模板执行", payload=_repair_plan_summary_payload(fallback_plan))
                 continue
             if (
                 method == BenchmarkMethod.OURS_CORRECTIVE_RAG
@@ -916,7 +1279,7 @@ def run_research_workflow(
                     repair_iteration=repair_iteration,
                 )
                 layout.write_json(out / "llm_agent_trace.json", llm_agent_trace, stage="global")
-                _complete(repair_token, summary="已重新生成代码计划", payload=regenerate_plan.model_dump(mode="json"))
+                _complete(repair_token, summary="已重新生成代码计划", payload=_repair_plan_summary_payload(regenerate_plan))
                 continue
             break
 
@@ -946,12 +1309,9 @@ def run_research_workflow(
         _complete(
             evaluator_token,
             summary="Evaluator 评估完成",
-            payload={
-                "evaluator_report": final_evaluator.model_dump(mode="json"),
-                "repair_plan": repair_plan.model_dump(mode="json") if repair_plan is not None else None,
-                "evidence_count": len(evidence),
-            },
+            payload=_evaluator_summary_payload(final_evaluator, repair_plan, evidence_count=len(evidence)),
         )
+        _update_result_gallery_round(result_rounds, repair_iteration=repair_iteration, evaluator_report=final_evaluator)
         if repair_plan is not None:
             final_repair_plan = repair_plan
         _extend_unique_evidence(critic_repair_evidence, evidence)
@@ -963,11 +1323,12 @@ def run_research_workflow(
             stage="evaluator",
             repair_iteration=repair_iteration,
         )
-        layout.write_json(
-            evaluator_dir / "retrieved_evidence_critic_repair.json",
-            _model_dump(evidence),
+        _write_debug_evidence(
+            layout,
+            "evaluator",
+            "retrieved_evidence_critic_repair.json",
+            evidence,
             logical_name=f"evaluator_round_{repair_iteration:02d}_retrieved_evidence_critic_repair.json",
-            stage="evaluator",
             repair_iteration=repair_iteration,
         )
         layout.write_json(
@@ -983,7 +1344,13 @@ def run_research_workflow(
         ):
             repair_token = _start("repair", "Repair", "应用拓扑质量修复计划")
             repair_trace.append(repair_plan)
-            case_spec = _apply_repair_and_record_case_spec(layout, case_spec, repair_plan, case_spec_causality)
+            case_spec = _apply_repair_and_record_case_spec(
+                layout,
+                case_spec,
+                repair_plan,
+                case_spec_causality,
+                case_spec_causality_full,
+            )
             layout.write_json(
                 evaluator_dir / "repair_trace.json",
                 _model_dump(repair_trace),
@@ -994,33 +1361,22 @@ def run_research_workflow(
             _complete(
                 repair_token,
                 summary="拓扑质量修复计划已应用",
-                payload=repair_plan.model_dump(mode="json"),
+                payload=_repair_plan_summary_payload(repair_plan),
             )
             continue
         break
 
     summary_dir = layout.stage_dir("summary")
-    layout.write_json(
-        planner_dir / "retrieved_evidence_codegen.json",
-        _model_dump(codegen_evidence),
-        stage="planner_coder",
-    )
-    layout.write_json(
-        summary_dir / "retrieved_evidence.json",
-        _model_dump(all_evidence),
+    _write_debug_evidence(layout, "planner_coder", "retrieved_evidence_codegen.json", codegen_evidence)
+    _write_debug_evidence(
+        layout,
+        "summary",
+        "retrieved_evidence.json",
+        all_evidence,
         logical_name="retrieved_evidence_all.json",
-        stage="summary",
     )
-    layout.write_json(
-        summary_dir / "retrieved_evidence_execution_repair.json",
-        _model_dump(execution_repair_evidence),
-        stage="summary",
-    )
-    layout.write_json(
-        summary_dir / "retrieved_evidence_critic_repair.json",
-        _model_dump(critic_repair_evidence),
-        stage="summary",
-    )
+    _write_debug_evidence(layout, "summary", "retrieved_evidence_execution_repair.json", execution_repair_evidence)
+    _write_debug_evidence(layout, "summary", "retrieved_evidence_critic_repair.json", critic_repair_evidence)
     layout.write_json(
         summary_dir / "failure_diagnosis.json",
         (final_diagnosis or _empty_diagnosis(case_spec)).model_dump(mode="json"),
@@ -1050,7 +1406,20 @@ def run_research_workflow(
     final_summary_path = summary_dir / "final_summary.md"
     _write_final_summary(final_summary_path, result, repair_trace)
     layout.register(final_summary_path, stage="summary")
+    _write_result_gallery_index(layout, result_rounds)
     layout.write_index()
     summary_token = _start("final_summary", "Reporter", "保存研究 workflow 摘要")
-    _complete(summary_token, summary="研究 workflow 完成", payload=result.model_dump(mode="json"))
+    _complete(
+        summary_token,
+        summary="研究 workflow 完成",
+        payload={
+            "case_id": result.case_id,
+            "method": result.method.value,
+            "final_success": result.final_success,
+            "execution_success": result.execution_success,
+            "quality_success": result.quality_success,
+            "repair_iterations": result.repair_iterations,
+            "output_dir": result.output_dir,
+        },
+    )
     return result

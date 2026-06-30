@@ -205,6 +205,7 @@ async function startRun(event) {
     method: $("method").value,
     quick: $("quick").checked,
     llm_agents: $("llmAgents").checked,
+    persist_debug_artifacts: $("persistDebugArtifacts").checked,
     max_repair_rounds: Number($("maxRepairRounds").value || 3)
   };
   try {

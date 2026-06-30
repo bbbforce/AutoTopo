@@ -348,6 +348,9 @@ class WorkflowTracer:
             "06_summary/repair_plan.json",
             "06_summary/repair_trace.json",
             "06_summary/final_summary.md",
+            "result/result_index.json",
+            "result/latest_density.png",
+            "result/latest_optimization_history.png",
         ]:
             add(name)
         return list(found.values())

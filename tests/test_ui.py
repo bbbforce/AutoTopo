@@ -105,3 +105,33 @@ def test_ui_rejects_second_active_run(tmp_path, monkeypatch):
         manager.create_run(
             RunCreateRequest(workflow_type="research", prompt="第二个", method="baseline_direct")
         )
+
+
+def test_run_manager_passes_research_debug_artifact_flag(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_research_workflow(*_args, **kwargs):
+        captured.update(kwargs)
+
+        class FakeResult:
+            def model_dump(self, mode="json"):
+                return {"ok": True, "mode": mode}
+
+        return FakeResult()
+
+    monkeypatch.setattr("autotopo.research_graph.run_research_workflow", fake_run_research_workflow)
+    manager = RunManager(tmp_path)
+    tracer = ui_module.WorkflowTracer(run_id="run123", workflow_type="research", output_dir=tmp_path)
+
+    result = manager._run_research_workflow(
+        RunCreateRequest(
+            workflow_type="research",
+            prompt="测试",
+            method="baseline_direct",
+            persist_debug_artifacts=True,
+        ),
+        tracer,
+    )
+
+    assert result == {"ok": True, "mode": "json"}
+    assert captured["persist_debug_artifacts"] is True
