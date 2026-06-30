@@ -14,15 +14,39 @@ from autotopo.schemas import BenchmarkType, CaseSpec, MaterialSpec
 
 
 SCIENTIST_SYSTEM_PROMPT = """\
-You are the Scientist agent for AutoTopo's minimal research workflow.
+你是 AutoTopo research_graph 的 Scientist agent。
 
-Classify the user request into one supported structured topology optimization
-benchmark and propose only conservative numeric parameters. Supported benchmark_type
-values are: cantilever, mbb, l_shape. The downstream solver will rebuild the
-canonical benchmark problem locally, so do not invent custom boundary conditions
-or custom simulator code.
+## 职责
+把用户自然语言和 structured_params 合并理解为一个最小研究 workflow 支持的拓扑优化基准问题草案。
+你的输出只是 CaseSpecDraft，后续系统会用本地 canonical benchmark 模板重建最终 CaseSpec 和 problem。
 
-Return JSON matching the requested schema. Use null for unknown optional fields.
+## 输入上下文
+- natural_language：用户的原始需求，可能包含 benchmark 类型、网格尺寸、体积分数、SIMP 参数和迭代参数。
+- structured_params：调用方显式传入的结构化参数，优先级高于自然语言。
+- quick_mode：快速实验开关；你只需理解上下文，不要自行改写 quick 模板。
+
+## 输出格式
+只输出一个严格匹配 CaseSpecDraft schema 的 JSON 对象，不要 Markdown、解释文字或额外字段。
+字段要求：
+- case_id：可为用户给定或简短稳定标识；未知时用 null。
+- benchmark_type：只能是 "cantilever"、"mbb"、"l_shape"。
+- variant：默认 "clear"，除非用户明确指定。
+- nelx、nely、volume_fraction、penal、rmin、max_iter、tol、optimizer、material：只在用户或 structured_params 明确给出，或能高置信保守推断时填写；未知可选字段用 null。
+
+## 关键判断标准
+- structured_params 与 natural_language 冲突时，以 structured_params 为准。
+- 只选择最接近用户意图的已支持 benchmark，不要创造新 benchmark。
+- 数值参数必须保守、物理合理，并落在 CaseSpecDraft 的 Pydantic 约束范围内。
+- 用户明确写出的网格、体积分数、罚因子、过滤半径、迭代上限和容差要尽量保留。
+
+## 硬性边界
+- 不得发明自定义边界条件、载荷路径、非设计域、求解器、优化器流程或 simulator code。
+- 不得输出最终 CaseSpec、CodePlan、ExecutionReport 或 Python 代码。
+- 不得把不确定信息伪装成确定参数。
+
+## 失败/不确定时如何输出
+如果无法判断类型，选择最保守的 cantilever；如果无法确定某个可选参数，填 null。
+如果用户请求超出最小 benchmark 范围，仍映射到最接近的支持类型，并保持参数保守。
 """
 
 
@@ -230,18 +254,53 @@ def build_case_spec(
 ) -> CaseSpec:
     """构造 CaseSpec，结构化参数覆盖自然语言推断结果。"""
 
+    spec, _causality = build_case_spec_with_causality(
+        natural_language,
+        structured_params=structured_params,
+        quick=quick,
+        use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm=llm,
+        llm_overrides=llm_overrides,
+        trace=trace,
+    )
+    return spec
+
+
+def build_case_spec_with_causality(
+    natural_language: str,
+    *,
+    structured_params: dict[str, Any] | None = None,
+    quick: bool = False,
+    use_llm: bool = False,
+    llm_provider: str | None = None,
+    llm: Any = None,
+    llm_overrides: dict[str, Any] | None = None,
+    trace: AgentTrace | None = None,
+) -> tuple[CaseSpec, dict[str, Any]]:
+    """构造 CaseSpec，并返回 raw/normalized causality 元数据。"""
+
     messages = [
         SystemMessage(content=SCIENTIST_SYSTEM_PROMPT),
         HumanMessage(
             content=(
-                "Build a CaseSpecDraft for this minimal benchmark request.\n"
+                "请为这个最小 benchmark 请求构建 CaseSpecDraft。\n"
                 f"natural_language: {natural_language}\n"
                 f"structured_params: {structured_params or {}}\n"
                 f"quick_mode: {quick}\n"
-                "Respect structured_params over natural_language when they conflict."
+                "当 structured_params 与 natural_language 冲突时，必须优先遵守 structured_params。"
             )
         ),
     ]
+    raw_layer: dict[str, Any] = {
+        "input_type": "natural_language",
+        "natural_language": natural_language,
+        "structured_params": structured_params or {},
+        "quick": quick,
+        "llm_requested": bool(use_llm or llm_provider or llm is not None),
+        "source": "deterministic",
+        "case_spec_draft": None,
+    }
     draft = try_invoke_structured(
         agent="scientist",
         messages=messages,
@@ -253,15 +312,33 @@ def build_case_spec(
         trace=trace,
     )
     if isinstance(draft, CaseSpecDraft):
-        return _draft_to_case_spec(
+        raw_layer["source"] = "llm"
+        raw_layer["case_spec_draft"] = draft.model_dump(mode="json")
+        spec = _draft_to_case_spec(
             draft,
             natural_language,
             structured_params=structured_params,
             quick=quick,
         )
+    else:
+        if raw_layer["llm_requested"]:
+            raw_layer["source"] = "deterministic_fallback"
+        spec = _build_case_spec_deterministic(
+            natural_language,
+            structured_params=structured_params,
+            quick=quick,
+        )
 
-    return _build_case_spec_deterministic(
-        natural_language,
-        structured_params=structured_params,
-        quick=quick,
-    )
+    spec_dump = spec.model_dump(mode="json")
+    return spec, {
+        "raw": raw_layer,
+        "normalized": {
+            "artifact": "case_spec.json",
+            "case_spec": spec_dump,
+        },
+        "repair": {
+            "artifact": "case_spec_repaired.json",
+            "applications": [],
+            "final_case_spec": spec_dump,
+        },
+    }
