@@ -414,6 +414,8 @@ class BenchmarkCaseResult(BaseModel):
     benchmark_type: BenchmarkType
     method: BenchmarkMethod
     first_pass_success: bool = False
+    execution_success: bool = False
+    quality_success: bool = False
     final_success: bool = False
     repair_success: bool = False
     repair_iterations: int = 0

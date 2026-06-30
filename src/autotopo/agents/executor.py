@@ -85,12 +85,12 @@ def _ensure_inside(path: Path, root: Path) -> bool:
     return True
 
 
-def _static_check_generated_code(code_path: Path, output_dir: Path) -> list[str]:
+def _static_check_generated_code(code_path: Path, sandbox_root: Path) -> list[str]:
     errors: list[str] = []
     if not code_path.exists():
         return [f"生成脚本不存在: {code_path}"]
-    if not _ensure_inside(code_path, output_dir):
-        return ["生成脚本必须位于输出目录内。"]
+    if not _ensure_inside(code_path, sandbox_root):
+        return ["生成脚本必须位于允许的输出根目录内。"]
     try:
         tree = ast.parse(code_path.read_text(encoding="utf-8"))
     except SyntaxError as exc:
@@ -123,11 +123,12 @@ def _run_generated_script(
     output_dir: Path,
     *,
     timeout_s: int,
+    sandbox_root: Path | None = None,
 ) -> ExecutionReport:
     code_path = Path(code_plan.generated_code_path)
     stdout_path = output_dir / "generated_stdout.log"
     stderr_path = output_dir / "generated_stderr.log"
-    errors = _static_check_generated_code(code_path, output_dir)
+    errors = _static_check_generated_code(code_path, sandbox_root or output_dir)
     if errors:
         stdout_path.write_text("", encoding="utf-8")
         stderr_path.write_text("\n".join(errors), encoding="utf-8")
@@ -247,6 +248,7 @@ def execute(
     output_dir: str | Path,
     *,
     generated_code_timeout_s: int = 60,
+    generated_code_sandbox_root: str | Path | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> ExecutionReport:
     """执行计划，捕获 stdout/stderr/traceback。"""
@@ -259,6 +261,7 @@ def execute(
             code_plan,
             out,
             timeout_s=generated_code_timeout_s,
+            sandbox_root=Path(generated_code_sandbox_root) if generated_code_sandbox_root is not None else None,
         )
 
     stdout_path = out / "run_stdout.log"

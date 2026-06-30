@@ -22,6 +22,8 @@ SUMMARY_FIELDS = [
     "benchmark_type",
     "method",
     "first_pass_success",
+    "execution_success",
+    "quality_success",
     "final_success",
     "repair_success",
     "repair_iterations",
@@ -60,11 +62,13 @@ def write_summary(results: list[BenchmarkCaseResult], output_dir: Path) -> None:
         "# Minimal Benchmark Summary",
         "",
         f"- total_runs: {len(results)}",
+        f"- execution_success: {sum(1 for item in results if item.execution_success)}",
+        f"- quality_success: {sum(1 for item in results if item.quality_success)}",
         f"- final_success: {sum(1 for item in results if item.final_success)}",
         f"- repair_success: {sum(1 for item in results if item.repair_success)}",
         "",
-        "| case_id | benchmark_type | method | first_pass_success | final_success | repair_iterations | failure_modes | compliance | volume_error | grayness_index | checkerboard_score | connectivity_score | converged |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| case_id | benchmark_type | method | first_pass_success | execution_success | quality_success | final_success | repair_iterations | failure_modes | compliance | volume_error | grayness_index | checkerboard_score | connectivity_score | converged |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for result in results:
         modes = ",".join(mode.value for mode in result.detected_failure_modes)
@@ -75,6 +79,8 @@ def write_summary(results: list[BenchmarkCaseResult], output_dir: Path) -> None:
                 result.benchmark_type.value,
                 result.method.value,
                 str(result.first_pass_success),
+                str(result.execution_success),
+                str(result.quality_success),
                 str(result.final_success),
                 str(result.repair_iterations),
                 modes,
@@ -156,7 +162,13 @@ def main(argv: list[str] | None = None) -> None:
         generated_code_timeout_s=args.generated_code_timeout,
     )
     final_success = sum(1 for item in results if item.final_success)
-    print(f"minimal benchmark complete: {len(results)} runs, final_success={final_success}")
+    execution_success = sum(1 for item in results if item.execution_success)
+    quality_success = sum(1 for item in results if item.quality_success)
+    print(
+        "minimal benchmark complete: "
+        f"{len(results)} runs, execution_success={execution_success}, "
+        f"quality_success={quality_success}, final_success={final_success}"
+    )
     print(f"summary: {Path(args.output) / 'summary.csv'}")
 
 

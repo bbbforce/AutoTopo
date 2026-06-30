@@ -3,21 +3,20 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
-from autotopo.ui import HTML_PAGE, RunCreateRequest, RunManager, create_app, serve_ui
+import autotopo.ui as ui_module
+from autotopo.ui import RunCreateRequest, RunManager, create_app, serve_ui
 
 
-def test_ui_inline_script_is_valid_javascript(tmp_path):
+def test_ui_static_script_is_valid_javascript():
     node = shutil.which("node")
     if node is None:
         return
 
-    start = HTML_PAGE.index("<script>") + len("<script>")
-    end = HTML_PAGE.index("</script>")
-    script_path = tmp_path / "ui.js"
-    script_path.write_text(HTML_PAGE[start:end], encoding="utf-8")
+    script_path = Path(ui_module.__file__).parent / "static" / "app.js"
     result = subprocess.run([node, "--check", str(script_path)], capture_output=True, text=True, check=False)
 
     assert result.returncode == 0, result.stderr
@@ -68,6 +67,7 @@ def test_create_app_registers_ui_routes(tmp_path):
 
     assert app.state.manager.output_root == tmp_path
     assert "/" in paths
+    assert "/static" in paths
     assert "/api/runs" in paths
     assert "/api/runs/{run_id}/events" in paths
     assert "/api/runs/{run_id}/artifacts/{name:path}" in paths

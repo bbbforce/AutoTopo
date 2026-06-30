@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AutoTopo 运行监控</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>AutoTopo 运行监控</h1>
+    <div id="headerStatus" class="status">未启动</div>
+  </header>
+  <main>
+    <section class="controls">
+      <div class="segmented" role="tablist" aria-label="workflow">
+        <button id="mainTab" class="active" type="button">主 workflow</button>
+        <button id="researchTab" type="button">研究 workflow</button>
+      </div>
+      <form id="runForm">
+        <label for="prompt">输入</label>
+        <textarea id="prompt" name="prompt">标准半对称 MBB 梁拓扑优化问题。设计域尺寸为 60x20，目标是最小化柔度，体积分数约束为 0.5。</textarea>
+        <label for="provider">Provider</label>
+        <input id="provider" name="provider" placeholder="留空使用 settings.yaml">
+        <div id="mainOptions">
+          <label for="images">图片路径</label>
+          <input id="images" name="images" placeholder="每行或逗号分隔">
+          <div class="row">
+            <div>
+              <label for="solveProfile">求解模式</label>
+              <select id="solveProfile">
+                <option value="preview_refine">preview_refine</option>
+                <option value="final_only">final_only</option>
+                <option value="preview_only">preview_only</option>
+              </select>
+            </div>
+            <div>
+              <label for="maxRetries">最大重试</label>
+              <input id="maxRetries" type="number" min="0" max="20" value="2">
+            </div>
+          </div>
+        </div>
+        <div id="researchOptions" class="hidden">
+          <div class="row">
+            <div>
+              <label for="method">方法</label>
+              <select id="method">
+                <option value="ours_corrective_rag">ours_corrective_rag</option>
+                <option value="baseline_naive_rag">baseline_naive_rag</option>
+                <option value="baseline_direct">baseline_direct</option>
+              </select>
+            </div>
+            <div>
+              <label for="maxRepairRounds">修复轮数</label>
+              <input id="maxRepairRounds" type="number" min="0" max="10" value="3">
+            </div>
+          </div>
+          <label class="checkline"><input id="quick" type="checkbox" checked> quick</label>
+          <label class="checkline"><input id="llmAgents" type="checkbox"> LLM agents</label>
+        </div>
+        <button class="primary" id="startButton" type="submit">启动</button>
+      </form>
+      <div id="runStatus" class="status">等待启动。</div>
+    </section>
+    <section class="workspace">
+      <section class="timeline" id="timeline"></section>
+      <section class="detail" id="detail">
+        <h2>事件详情</h2>
+        <div class="status">选择 timeline 中的事件查看输出。</div>
+        <h2 style="margin-top: 16px;">优化迭代输出</h2>
+        <pre id="progressConsole" class="console-box">等待优化迭代...</pre>
+      </section>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
